@@ -65,11 +65,11 @@ fn main() {
 fn setup(mut commands: Commands, mut grid: ResMut<Grid>) {
     commands.spawn(Camera2dBundle::default());
     grid.fill_test_pattern();
-    spawn_frame_and_panel(&mut commands);
+    let panel = spawn_frame_and_panel(&mut commands);
     spawn_background_grid(&mut commands, &grid);
     let sprites = spawn_grid(&mut commands, &grid);
     let cursor_sprite = spawn_cursor(&mut commands);
-    let ui_texts = spawn_ui_texts(&mut commands);
+    let ui_texts = spawn_ui_texts(&mut commands, panel);
     commands.insert_resource(BlockSprites { entities: sprites });
     commands.insert_resource(CursorSprite(cursor_sprite));
     commands.insert_resource(ui_texts);
@@ -208,7 +208,7 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
     }
 }
 
-fn spawn_frame_and_panel(commands: &mut Commands) {
+fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
     let grid_w = GRID_W as f32 * CELL_SIZE;
     let grid_h = GRID_H as f32 * CELL_SIZE;
     let half_w = grid_w / 2.0;
@@ -240,35 +240,39 @@ fn spawn_frame_and_panel(commands: &mut Commands) {
         });
     }
 
-    let panel_x = half_w + FRAME_THICKNESS + PANEL_GAP + PANEL_WIDTH / 2.0;
-    let panel_size = Vec2::new(PANEL_WIDTH, grid_h + FRAME_THICKNESS * 2.0);
-    commands.spawn(SpriteBundle {
-        sprite: Sprite {
-            color: Color::srgb(0.07, 0.07, 0.09),
-            custom_size: Some(panel_size),
+    let panel = commands
+        .spawn(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                right: Val::Px(PANEL_GAP),
+                top: Val::Px(PANEL_GAP),
+                width: Val::Px(PANEL_WIDTH),
+                height: Val::Px(grid_h + FRAME_THICKNESS * 2.0),
+                flex_direction: FlexDirection::Column,
+                ..Default::default()
+            },
+            background_color: BackgroundColor(Color::srgb(0.07, 0.07, 0.09)),
             ..Default::default()
-        },
-        transform: Transform::from_translation(Vec3::new(panel_x, 0.0, -0.6)),
-        ..Default::default()
+        })
+        .id();
+
+    commands.entity(panel).with_children(|parent| {
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(28.0),
+                ..Default::default()
+            },
+            background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
+            ..Default::default()
+        });
     });
 
-    let header_size = Vec2::new(PANEL_WIDTH - 12.0, 28.0);
-    commands.spawn(SpriteBundle {
-        sprite: Sprite {
-            color: Color::srgb(0.12, 0.12, 0.16),
-            custom_size: Some(header_size),
-            ..Default::default()
-        },
-        transform: Transform::from_translation(Vec3::new(
-            panel_x,
-            half_h - 20.0,
-            -0.5,
-        )),
-        ..Default::default()
-    });
+    panel
 }
 
-fn spawn_ui_texts(commands: &mut Commands) -> UiTexts {
+fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
+    let panel_margin = 16.0;
     let style = TextStyle {
         font: Default::default(),
         font_size: 20.0,
@@ -279,46 +283,51 @@ fn spawn_ui_texts(commands: &mut Commands) -> UiTexts {
         .spawn(TextBundle {
             text: Text::from_section("Score: 0", style.clone()),
             style: Style {
-                position_type: PositionType::Absolute,
-                right: Val::Px(24.0),
-                top: Val::Px(40.0),
+                margin: UiRect::all(Val::Px(panel_margin)),
                 ..Default::default()
             },
             ..Default::default()
         })
+        .set_parent(panel)
         .id();
 
     let timer = commands
         .spawn(TextBundle {
             text: Text::from_section("Time: 0.0s", style),
             style: Style {
-                position_type: PositionType::Absolute,
-                right: Val::Px(24.0),
-                top: Val::Px(70.0),
+                margin: UiRect::left(Val::Px(panel_margin)),
                 ..Default::default()
             },
             ..Default::default()
         })
+        .set_parent(panel)
         .id();
 
     let game_over = commands
         .spawn(TextBundle {
-            text: Text::from_section("GAME OVER - Press R", TextStyle {
-                font: Default::default(),
-                font_size: 36.0,
-                color: Color::srgb(0.95, 0.2, 0.2),
-            }),
+            text: Text::from_section(
+                "GAME OVER - Press R",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 22.0,
+                    color: Color::srgb(0.95, 0.2, 0.2),
+                },
+            ),
             style: Style {
-                position_type: PositionType::Absolute,
-                left: Val::Percent(50.0),
-                top: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(panel_margin)),
                 ..Default::default()
             },
+            visibility: Visibility::Hidden,
             ..Default::default()
         })
+        .set_parent(panel)
         .id();
 
-    UiTexts { score, timer, game_over }
+    UiTexts {
+        score,
+        timer,
+        game_over,
+    }
 }
 
 fn update_ui_text(
