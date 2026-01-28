@@ -124,22 +124,17 @@ impl Grid {
         self.cells.fill(None);
     }
 
-    pub fn resolve(&mut self) -> u32 {
-        let mut total_cleared = 0;
-        let mut passes = 0;
-        loop {
-            let marks = self.find_matches();
-            if marks.iter().all(|m| !*m) {
-                break;
-            }
-            total_cleared += self.clear_matches(&marks);
-            self.apply_gravity();
-            passes += 1;
-            if passes > 10 {
-                break;
-            }
+    pub fn clear_matches_once(&mut self) -> u32 {
+        let marks = self.find_matches();
+        if marks.iter().all(|m| !*m) {
+            return 0;
         }
-        total_cleared
+        self.clear_matches(&marks)
+    }
+
+    pub fn has_matches(&self) -> bool {
+        let marks = self.find_matches();
+        marks.iter().any(|m| *m)
     }
 
     pub fn apply_gravity(&mut self) {

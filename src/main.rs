@@ -26,6 +26,12 @@ struct RiseTimer(Timer);
 #[derive(Resource)]
 struct GravityTimer(Timer);
 
+#[derive(Resource)]
+struct ClearDelayTimer(Timer);
+
+#[derive(Resource, Default)]
+struct PendingClear(bool);
+
 #[derive(Resource, Default)]
 struct Score(u32);
 
@@ -52,6 +58,8 @@ fn main() {
         .insert_resource(Cursor::new(0, 0))
         .insert_resource(RiseTimer(Timer::from_seconds(2.5, TimerMode::Repeating)))
         .insert_resource(GravityTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
+        .insert_resource(ClearDelayTimer(Timer::from_seconds(0.01, TimerMode::Repeating)))
+        .insert_resource(PendingClear::default())
         .insert_resource(Score::default())
         .insert_resource(ElapsedTime::default())
         .insert_resource(GameOver::default())
@@ -86,7 +94,8 @@ fn handle_input(
     mut grid: ResMut<Grid>,
     mut cursor: ResMut<Cursor>,
     game_over: Res<GameOver>,
-    mut score: ResMut<Score>,
+    mut pending_clear: ResMut<PendingClear>,
+    mut clear_timer: ResMut<ClearDelayTimer>,
 ) {
     if game_over.0 {
         return;
@@ -107,7 +116,10 @@ fn handle_input(
     if keys.just_pressed(KeyCode::Space) {
         let cmd = SwapCmd::right_of(cursor.x, cursor.y);
         if grid.swap_in_bounds(cmd) {
-            score.0 += grid.clear_matches_once();
+            if grid.has_matches() {
+                pending_clear.0 = true;
+                clear_timer.0.reset();
+            }
         }
     }
 }
@@ -118,6 +130,8 @@ fn handle_restart(
     mut cursor: ResMut<Cursor>,
     mut rise_timer: ResMut<RiseTimer>,
     mut gravity_timer: ResMut<GravityTimer>,
+    mut clear_timer: ResMut<ClearDelayTimer>,
+    mut pending_clear: ResMut<PendingClear>,
     mut game_over: ResMut<GameOver>,
     mut score: ResMut<Score>,
     mut elapsed: ResMut<ElapsedTime>,
@@ -131,6 +145,8 @@ fn handle_restart(
         *cursor = Cursor::new(0, 0);
         rise_timer.0.reset();
         gravity_timer.0.reset();
+        clear_timer.0.reset();
+        pending_clear.0 = false;
         score.0 = 0;
         elapsed.0 = 0.0;
         game_over.0 = false;
@@ -142,7 +158,8 @@ fn rise_stack(
     mut timer: ResMut<RiseTimer>,
     mut grid: ResMut<Grid>,
     mut game_over: ResMut<GameOver>,
-    mut score: ResMut<Score>,
+    mut pending_clear: ResMut<PendingClear>,
+    mut clear_timer: ResMut<ClearDelayTimer>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
         if grid.top_row_occupied() {
@@ -150,7 +167,10 @@ fn rise_stack(
             return;
         }
         grid.push_bottom_row();
-        score.0 += grid.clear_matches_once();
+        if grid.has_matches() {
+            pending_clear.0 = true;
+            clear_timer.0.reset();
+        }
     }
 }
 
@@ -167,6 +187,8 @@ fn apply_gravity_system(
     mut grid: ResMut<Grid>,
     game_over: Res<GameOver>,
     mut score: ResMut<Score>,
+    mut pending_clear: ResMut<PendingClear>,
+    mut clear_timer: ResMut<ClearDelayTimer>,
 ) {
     if game_over.0 {
         return;
@@ -174,7 +196,17 @@ fn apply_gravity_system(
     if timer.0.tick(time.delta()).just_finished() {
         let moved = grid.apply_gravity_step();
         if !moved {
-            score.0 += grid.clear_matches_once();
+            if pending_clear.0 {
+                if clear_timer.0.tick(time.delta()).just_finished() {
+                    score.0 += grid.clear_matches_once();
+                    pending_clear.0 = false;
+                }
+            } else if grid.has_matches() {
+                pending_clear.0 = true;
+                clear_timer.0.reset();
+            }
+        } else {
+            pending_clear.0 = false;
         }
     }
 }
