@@ -19,7 +19,7 @@ jobs:
     - name: Install Bevy Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -yqq g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev mesa-vulkan-drivers vulkan-intel vulkan-radeon
+        sudo apt-get install -yqq g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev mesa-vulkan-drivers
 
     - name: Build
       run: cargo build --verbose
