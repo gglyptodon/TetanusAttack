@@ -19,6 +19,9 @@ struct CursorSprite(Entity);
 #[derive(Resource)]
 struct RiseTimer(Timer);
 
+#[derive(Resource)]
+struct GravityTimer(Timer);
+
 #[derive(Resource, Default)]
 struct GameOver(bool);
 
@@ -28,6 +31,7 @@ fn main() {
         .insert_resource(Grid::new(GRID_W, GRID_H))
         .insert_resource(Cursor::new(0, 0))
         .insert_resource(RiseTimer(Timer::from_seconds(1.5, TimerMode::Repeating)))
+        .insert_resource(GravityTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(GameOver::default())
         .add_systems(Startup, setup)
         .add_systems(Update, handle_input)
@@ -93,11 +97,18 @@ fn rise_stack(
     }
 }
 
-fn apply_gravity_system(mut grid: ResMut<Grid>, game_over: Res<GameOver>) {
+fn apply_gravity_system(
+    time: Res<Time>,
+    mut timer: ResMut<GravityTimer>,
+    mut grid: ResMut<Grid>,
+    game_over: Res<GameOver>,
+) {
     if game_over.0 {
         return;
     }
-    grid.apply_gravity();
+    if timer.0.tick(time.delta()).just_finished() {
+        grid.apply_gravity_step();
+    }
 }
 
 fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {

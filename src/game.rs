@@ -153,6 +153,25 @@ impl Grid {
         }
     }
 
+    pub fn apply_gravity_step(&mut self) -> bool {
+        let mut moved = false;
+        if self.height < 2 {
+            return false;
+        }
+        for x in 0..self.width {
+            for y in 1..self.height {
+                let idx = self.idx(x, y);
+                let below = self.idx(x, y - 1);
+                if self.cells[idx].is_some() && self.cells[below].is_none() {
+                    self.cells[below] = self.cells[idx];
+                    self.cells[idx] = None;
+                    moved = true;
+                }
+            }
+        }
+        moved
+    }
+
     fn find_matches(&self) -> Vec<bool> {
         let mut marks = vec![false; self.width * self.height];
 
