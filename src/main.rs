@@ -107,7 +107,7 @@ fn handle_input(
     if keys.just_pressed(KeyCode::Space) {
         let cmd = SwapCmd::right_of(cursor.x, cursor.y);
         if grid.swap_in_bounds(cmd) {
-            score.0 += grid.resolve();
+            score.0 += grid.clear_matches_once();
         }
     }
 }
@@ -150,7 +150,7 @@ fn rise_stack(
             return;
         }
         grid.push_bottom_row();
-        score.0 += grid.resolve();
+        score.0 += grid.clear_matches_once();
     }
 }
 
@@ -174,7 +174,7 @@ fn apply_gravity_system(
     if timer.0.tick(time.delta()).just_finished() {
         let moved = grid.apply_gravity_step();
         if !moved {
-            score.0 += grid.resolve();
+            score.0 += grid.clear_matches_once();
         }
     }
 }
