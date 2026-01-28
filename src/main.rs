@@ -16,20 +16,31 @@ struct BlockSprites {
 #[derive(Resource)]
 struct CursorSprite(Entity);
 
+#[derive(Resource)]
+struct RiseTimer(Timer);
+
+#[derive(Resource, Default)]
+struct GameOver(bool);
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(Grid::new(GRID_W, GRID_H))
         .insert_resource(Cursor::new(0, 0))
+        .insert_resource(RiseTimer(Timer::from_seconds(1.5, TimerMode::Repeating)))
+        .insert_resource(GameOver::default())
         .add_systems(Startup, setup)
         .add_systems(Update, handle_input)
+        .add_systems(Update, apply_gravity_system)
         .add_systems(Update, update_visuals)
+        .add_systems(Update, rise_stack)
         .run();
 }
 
 fn setup(mut commands: Commands, mut grid: ResMut<Grid>) {
     commands.spawn(Camera2dBundle::default());
     grid.fill_test_pattern();
+    spawn_background_grid(&mut commands, &grid);
     let sprites = spawn_grid(&mut commands, &grid);
     let cursor_sprite = spawn_cursor(&mut commands);
     commands.insert_resource(BlockSprites { entities: sprites });
@@ -40,7 +51,11 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut grid: ResMut<Grid>,
     mut cursor: ResMut<Cursor>,
+    game_over: Res<GameOver>,
 ) {
+    if game_over.0 {
+        return;
+    }
     if keys.just_pressed(KeyCode::ArrowLeft) {
         cursor.move_by(-1, 0, grid.width, grid.height);
     }
@@ -60,6 +75,29 @@ fn handle_input(
             grid.resolve();
         }
     }
+}
+
+fn rise_stack(
+    time: Res<Time>,
+    mut timer: ResMut<RiseTimer>,
+    mut grid: ResMut<Grid>,
+    mut game_over: ResMut<GameOver>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        if grid.top_row_occupied() {
+            game_over.0 = true;
+            return;
+        }
+        grid.push_bottom_row();
+        grid.resolve();
+    }
+}
+
+fn apply_gravity_system(mut grid: ResMut<Grid>, game_over: Res<GameOver>) {
+    if game_over.0 {
+        return;
+    }
+    grid.apply_gravity();
 }
 
 fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {
@@ -82,6 +120,23 @@ fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {
         }
     }
     entities
+}
+
+fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
+    for y in 0..grid.height {
+        for x in 0..grid.width {
+            let pos = cell_center(grid, x, y);
+            commands.spawn(SpriteBundle {
+                sprite: Sprite {
+                    color: Color::srgba(0.1, 0.1, 0.12, 0.35),
+                    custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
+                    ..Default::default()
+                },
+                transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 fn spawn_cursor(commands: &mut Commands) -> Entity {

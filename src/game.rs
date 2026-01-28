@@ -111,7 +111,8 @@ impl Grid {
             BlockColor::Yellow,
             BlockColor::Purple,
         ];
-        for y in 0..self.height {
+        let filled_rows = self.height / 2;
+        for y in 0..filled_rows {
             for x in 0..self.width {
                 let c = colors[(x + y) % colors.len()];
                 self.set(x, y, Some(Block { color: c }));
@@ -128,7 +129,6 @@ impl Grid {
             }
             self.clear_matches(&marks);
             self.apply_gravity();
-            self.refill_random();
             passes += 1;
             if passes > 10 {
                 break;
@@ -136,7 +136,7 @@ impl Grid {
         }
     }
 
-    fn apply_gravity(&mut self) {
+    pub fn apply_gravity(&mut self) {
         for x in 0..self.width {
             let mut write_y = 0;
             for y in 0..self.height {
@@ -148,17 +148,6 @@ impl Grid {
                         self.cells[idx] = None;
                     }
                     write_y += 1;
-                }
-            }
-        }
-    }
-
-    fn refill_random(&mut self) {
-        let mut rng = thread_rng();
-        for y in 0..self.height {
-            for x in 0..self.width {
-                if self.get(x, y).is_none() {
-                    self.set(x, y, Some(Block { color: random_color(&mut rng) }));
                 }
             }
         }
@@ -233,6 +222,43 @@ impl Grid {
 
     fn idx(&self, x: usize, y: usize) -> usize {
         y * self.width + x
+    }
+
+    pub fn push_bottom_row(&mut self) {
+        if self.height == 0 || self.width == 0 {
+            return;
+        }
+        if self.top_row_occupied() {
+            return;
+        }
+        for y in (1..self.height).rev() {
+            for x in 0..self.width {
+                let below = self.idx(x, y - 1);
+                let here = self.idx(x, y);
+                self.cells[here] = self.cells[below];
+            }
+        }
+
+        let mut rng = thread_rng();
+        for x in 0..self.width {
+            let idx = self.idx(x, 0);
+            self.cells[idx] = Some(Block {
+                color: random_color(&mut rng),
+            });
+        }
+    }
+
+    pub fn top_row_occupied(&self) -> bool {
+        if self.height == 0 {
+            return false;
+        }
+        let y = self.height - 1;
+        for x in 0..self.width {
+            if self.get(x, y).is_some() {
+                return true;
+            }
+        }
+        false
     }
 }
 
