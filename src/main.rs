@@ -166,12 +166,16 @@ fn apply_gravity_system(
     mut timer: ResMut<GravityTimer>,
     mut grid: ResMut<Grid>,
     game_over: Res<GameOver>,
+    mut score: ResMut<Score>,
 ) {
     if game_over.0 {
         return;
     }
     if timer.0.tick(time.delta()).just_finished() {
-        grid.apply_gravity_step();
+        let moved = grid.apply_gravity_step();
+        if !moved {
+            score.0 += grid.resolve();
+        }
     }
 }
 
