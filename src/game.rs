@@ -1,0 +1,247 @@
+use bevy::prelude::Resource;
+use rand::prelude::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockColor {
+    Red,
+    Green,
+    Blue,
+    Yellow,
+    Purple,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Block {
+    pub color: BlockColor,
+}
+
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct Cursor {
+    pub x: usize,
+    pub y: usize,
+}
+
+impl Cursor {
+    pub fn new(x: usize, y: usize) -> Self {
+        Self { x, y }
+    }
+
+    pub fn move_by(&mut self, dx: isize, dy: isize, width: usize, height: usize) -> bool {
+        if width < 2 || height == 0 {
+            return false;
+        }
+        let max_x = width - 2;
+        let max_y = height - 1;
+        let nx = (self.x as isize + dx).clamp(0, max_x as isize) as usize;
+        let ny = (self.y as isize + dy).clamp(0, max_y as isize) as usize;
+        let changed = nx != self.x || ny != self.y;
+        self.x = nx;
+        self.y = ny;
+        changed
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SwapCmd {
+    pub ax: usize,
+    pub ay: usize,
+    pub bx: usize,
+    pub by: usize,
+}
+
+impl SwapCmd {
+    pub fn right_of(x: usize, y: usize) -> Self {
+        Self {
+            ax: x,
+            ay: y,
+            bx: x + 1,
+            by: y,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct Grid {
+    pub width: usize,
+    pub height: usize,
+    cells: Vec<Option<Block>>,
+}
+
+impl Grid {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            cells: vec![None; width * height],
+        }
+    }
+
+    pub fn get(&self, x: usize, y: usize) -> Option<Block> {
+        self.cells[self.idx(x, y)]
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, block: Option<Block>) {
+        let idx = self.idx(x, y);
+        self.cells[idx] = block;
+    }
+
+    pub fn swap(&mut self, ax: usize, ay: usize, bx: usize, by: usize) {
+        let a = self.idx(ax, ay);
+        let b = self.idx(bx, by);
+        self.cells.swap(a, b);
+    }
+
+    pub fn swap_in_bounds(&mut self, cmd: SwapCmd) -> bool {
+        if cmd.ax >= self.width
+            || cmd.bx >= self.width
+            || cmd.ay >= self.height
+            || cmd.by >= self.height
+        {
+            return false;
+        }
+        self.swap(cmd.ax, cmd.ay, cmd.bx, cmd.by);
+        true
+    }
+
+    pub fn fill_test_pattern(&mut self) {
+        let colors = [
+            BlockColor::Red,
+            BlockColor::Green,
+            BlockColor::Blue,
+            BlockColor::Yellow,
+            BlockColor::Purple,
+        ];
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let c = colors[(x + y) % colors.len()];
+                self.set(x, y, Some(Block { color: c }));
+            }
+        }
+    }
+
+    pub fn resolve(&mut self) {
+        let mut passes = 0;
+        loop {
+            let marks = self.find_matches();
+            if marks.iter().all(|m| !*m) {
+                break;
+            }
+            self.clear_matches(&marks);
+            self.apply_gravity();
+            self.refill_random();
+            passes += 1;
+            if passes > 10 {
+                break;
+            }
+        }
+    }
+
+    fn apply_gravity(&mut self) {
+        for x in 0..self.width {
+            let mut write_y = 0;
+            for y in 0..self.height {
+                let idx = self.idx(x, y);
+                if let Some(block) = self.cells[idx] {
+                    if y != write_y {
+                        let write_idx = self.idx(x, write_y);
+                        self.cells[write_idx] = Some(block);
+                        self.cells[idx] = None;
+                    }
+                    write_y += 1;
+                }
+            }
+        }
+    }
+
+    fn refill_random(&mut self) {
+        let mut rng = thread_rng();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get(x, y).is_none() {
+                    self.set(x, y, Some(Block { color: random_color(&mut rng) }));
+                }
+            }
+        }
+    }
+
+    fn find_matches(&self) -> Vec<bool> {
+        let mut marks = vec![false; self.width * self.height];
+
+        for y in 0..self.height {
+            let mut run_start = 0;
+            let mut run_len = 1;
+            for x in 1..self.width {
+                if self.same_color(x, y, x - 1, y) {
+                    run_len += 1;
+                } else {
+                    if run_len >= 3 {
+                        for rx in run_start..run_start + run_len {
+                            marks[self.idx(rx, y)] = true;
+                        }
+                    }
+                    run_start = x;
+                    run_len = 1;
+                }
+            }
+            if run_len >= 3 {
+                for rx in run_start..run_start + run_len {
+                    marks[self.idx(rx, y)] = true;
+                }
+            }
+        }
+
+        for x in 0..self.width {
+            let mut run_start = 0;
+            let mut run_len = 1;
+            for y in 1..self.height {
+                if self.same_color(x, y, x, y - 1) {
+                    run_len += 1;
+                } else {
+                    if run_len >= 3 {
+                        for ry in run_start..run_start + run_len {
+                            marks[self.idx(x, ry)] = true;
+                        }
+                    }
+                    run_start = y;
+                    run_len = 1;
+                }
+            }
+            if run_len >= 3 {
+                for ry in run_start..run_start + run_len {
+                    marks[self.idx(x, ry)] = true;
+                }
+            }
+        }
+
+        marks
+    }
+
+    fn clear_matches(&mut self, marks: &[bool]) {
+        for i in 0..self.cells.len() {
+            if marks[i] {
+                self.cells[i] = None;
+            }
+        }
+    }
+
+    fn same_color(&self, ax: usize, ay: usize, bx: usize, by: usize) -> bool {
+        match (self.get(ax, ay), self.get(bx, by)) {
+            (Some(a), Some(b)) => a.color == b.color,
+            _ => false,
+        }
+    }
+
+    fn idx(&self, x: usize, y: usize) -> usize {
+        y * self.width + x
+    }
+}
+
+fn random_color(rng: &mut ThreadRng) -> BlockColor {
+    match rng.gen_range(0..5) {
+        0 => BlockColor::Red,
+        1 => BlockColor::Green,
+        2 => BlockColor::Blue,
+        3 => BlockColor::Yellow,
+        _ => BlockColor::Purple,
+    }
+}
