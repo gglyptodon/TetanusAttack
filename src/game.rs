@@ -261,9 +261,14 @@ impl Grid {
         let mut rng = thread_rng();
         for x in 0..self.width {
             let idx = self.idx(x, 0);
-            self.cells[idx] = Some(Block {
-                color: random_color(&mut rng),
-            });
+            let mut color = random_color(&mut rng);
+            for _ in 0..10 {
+                if !self.would_create_match(x, 0, color) {
+                    break;
+                }
+                color = random_color(&mut rng);
+            }
+            self.cells[idx] = Some(Block { color });
         }
     }
 
@@ -277,6 +282,42 @@ impl Grid {
                 return true;
             }
         }
+        false
+    }
+
+    fn would_create_match(&self, x: usize, y: usize, color: BlockColor) -> bool {
+        let left1 = if x >= 1 { self.get(x - 1, y) } else { None };
+        let left2 = if x >= 2 { self.get(x - 2, y) } else { None };
+        let right1 = if x + 1 < self.width {
+            self.get(x + 1, y)
+        } else {
+            None
+        };
+        let right2 = if x + 2 < self.width {
+            self.get(x + 2, y)
+        } else {
+            None
+        };
+
+        let horiz_left = left1.map(|b| b.color == color).unwrap_or(false)
+            && left2.map(|b| b.color == color).unwrap_or(false);
+        let horiz_right = right1.map(|b| b.color == color).unwrap_or(false)
+            && right2.map(|b| b.color == color).unwrap_or(false);
+        let horiz_split = left1.map(|b| b.color == color).unwrap_or(false)
+            && right1.map(|b| b.color == color).unwrap_or(false);
+
+        if horiz_left || horiz_right || horiz_split {
+            return true;
+        }
+
+        if y + 2 < self.height {
+            let up1 = self.get(x, y + 1).map(|b| b.color == color).unwrap_or(false);
+            let up2 = self.get(x, y + 2).map(|b| b.color == color).unwrap_or(false);
+            if up1 && up2 {
+                return true;
+            }
+        }
+
         false
     }
 }
