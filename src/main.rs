@@ -158,6 +158,7 @@ fn rise_stack(
     mut timer: ResMut<RiseTimer>,
     mut grid: ResMut<Grid>,
     mut game_over: ResMut<GameOver>,
+    mut cursor: ResMut<Cursor>,
     mut pending_clear: ResMut<PendingClear>,
     mut clear_timer: ResMut<ClearDelayTimer>,
 ) {
@@ -167,6 +168,9 @@ fn rise_stack(
             return;
         }
         grid.push_bottom_row();
+        if cursor.y + 1 < grid.height {
+            cursor.y += 1;
+        }
         if grid.has_matches() {
             pending_clear.0 = true;
             clear_timer.0.reset();
