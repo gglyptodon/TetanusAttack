@@ -51,6 +51,11 @@ struct PanelEntity(Entity);
 #[derive(Resource, Default)]
 struct GameOver(bool);
 
+#[derive(Resource, Default)]
+struct GameOverTimer {
+    seconds: f32,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -63,11 +68,13 @@ fn main() {
         .insert_resource(Score::default())
         .insert_resource(ElapsedTime::default())
         .insert_resource(GameOver::default())
+        .insert_resource(GameOverTimer::default())
         .add_systems(Startup, setup)
         .add_systems(Update, handle_input)
         .add_systems(Update, handle_restart)
         .add_systems(Update, apply_gravity_system)
         .add_systems(Update, update_time)
+        .add_systems(Update, update_game_over_timer)
         .add_systems(Update, update_panel_layout)
         .add_systems(Update, update_visuals)
         .add_systems(Update, update_ui_text)
@@ -91,6 +98,8 @@ fn setup(mut commands: Commands, mut grid: ResMut<Grid>) {
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
+    gamepads: Res<Gamepads>,
     mut grid: ResMut<Grid>,
     mut cursor: ResMut<Cursor>,
     game_over: Res<GameOver>,
@@ -113,7 +122,29 @@ fn handle_input(
         cursor.move_by(0, -1, grid.width, grid.height);
     }
 
-    if keys.just_pressed(KeyCode::Space) {
+    let mut swap_pressed = keys.just_pressed(KeyCode::Space);
+
+    for gamepad in gamepads.iter() {
+        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadLeft)) {
+            cursor.move_by(-1, 0, grid.width, grid.height);
+        }
+        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadRight)) {
+            cursor.move_by(1, 0, grid.width, grid.height);
+        }
+        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadUp)) {
+            cursor.move_by(0, 1, grid.width, grid.height);
+        }
+        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadDown)) {
+            cursor.move_by(0, -1, grid.width, grid.height);
+        }
+
+        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::South));
+        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::East));
+        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::West));
+        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::North));
+    }
+
+    if swap_pressed {
         let cmd = SwapCmd::right_of(cursor.x, cursor.y);
         if grid.swap_in_bounds(cmd) {
             if grid.has_matches() {
@@ -126,6 +157,7 @@ fn handle_input(
 
 fn handle_restart(
     keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
     mut grid: ResMut<Grid>,
     mut cursor: ResMut<Cursor>,
     mut rise_timer: ResMut<RiseTimer>,
@@ -135,11 +167,22 @@ fn handle_restart(
     mut game_over: ResMut<GameOver>,
     mut score: ResMut<Score>,
     mut elapsed: ResMut<ElapsedTime>,
+    mut game_over_timer: ResMut<GameOverTimer>,
 ) {
     if !game_over.0 {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    if game_over_timer.seconds < 1.0 {
+        return;
+    }
+    let keyboard_pressed = keys.get_just_pressed().next().is_some();
+    let gamepad_pressed = buttons
+        .get_just_pressed()
+        .any(|b| !matches!(b.button_type, GamepadButtonType::DPadUp
+            | GamepadButtonType::DPadDown
+            | GamepadButtonType::DPadLeft
+            | GamepadButtonType::DPadRight));
+    if keyboard_pressed || gamepad_pressed {
         grid.clear();
         grid.fill_test_pattern();
         *cursor = Cursor::new(0, 0);
@@ -149,6 +192,7 @@ fn handle_restart(
         pending_clear.0 = false;
         score.0 = 0;
         elapsed.0 = 0.0;
+        game_over_timer.seconds = 0.0;
         game_over.0 = false;
     }
 }
@@ -161,10 +205,12 @@ fn rise_stack(
     mut cursor: ResMut<Cursor>,
     mut pending_clear: ResMut<PendingClear>,
     mut clear_timer: ResMut<ClearDelayTimer>,
+    mut game_over_timer: ResMut<GameOverTimer>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
         if grid.top_row_occupied() {
             game_over.0 = true;
+            game_over_timer.seconds = 0.0;
             return;
         }
         grid.push_bottom_row();
@@ -183,6 +229,12 @@ fn update_time(time: Res<Time>, mut elapsed: ResMut<ElapsedTime>, game_over: Res
         return;
     }
     elapsed.0 += time.delta_seconds();
+}
+
+fn update_game_over_timer(time: Res<Time>, mut timer: ResMut<GameOverTimer>, game_over: Res<GameOver>) {
+    if game_over.0 && timer.seconds < 1.0 {
+        timer.seconds += time.delta_seconds();
+    }
 }
 
 fn apply_gravity_system(
@@ -352,7 +404,7 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
     let game_over = commands
         .spawn(TextBundle {
             text: Text::from_section(
-                "GAME OVER - Press R",
+                "GAME OVER - Press Any Button",
                 TextStyle {
                     font: Default::default(),
                     font_size: 22.0,
