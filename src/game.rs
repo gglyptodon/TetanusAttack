@@ -120,20 +120,26 @@ impl Grid {
         }
     }
 
-    pub fn resolve(&mut self) {
+    pub fn clear(&mut self) {
+        self.cells.fill(None);
+    }
+
+    pub fn resolve(&mut self) -> u32 {
+        let mut total_cleared = 0;
         let mut passes = 0;
         loop {
             let marks = self.find_matches();
             if marks.iter().all(|m| !*m) {
                 break;
             }
-            self.clear_matches(&marks);
+            total_cleared += self.clear_matches(&marks);
             self.apply_gravity();
             passes += 1;
             if passes > 10 {
                 break;
             }
         }
+        total_cleared
     }
 
     pub fn apply_gravity(&mut self) {
@@ -224,12 +230,15 @@ impl Grid {
         marks
     }
 
-    fn clear_matches(&mut self, marks: &[bool]) {
+    fn clear_matches(&mut self, marks: &[bool]) -> u32 {
+        let mut cleared = 0;
         for i in 0..self.cells.len() {
             if marks[i] {
                 self.cells[i] = None;
+                cleared += 1;
             }
         }
+        cleared
     }
 
     fn same_color(&self, ax: usize, ay: usize, bx: usize, by: usize) -> bool {
