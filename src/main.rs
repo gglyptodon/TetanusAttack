@@ -1,5 +1,6 @@
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 mod game;
 use game::{BlockColor, Cursor, Grid, SwapCmd};
@@ -38,6 +39,9 @@ struct UiTexts {
     game_over: Entity,
 }
 
+#[derive(Resource)]
+struct PanelEntity(Entity);
+
 #[derive(Resource, Default)]
 struct GameOver(bool);
 
@@ -56,6 +60,7 @@ fn main() {
         .add_systems(Update, handle_restart)
         .add_systems(Update, apply_gravity_system)
         .add_systems(Update, update_time)
+        .add_systems(Update, update_panel_layout)
         .add_systems(Update, update_visuals)
         .add_systems(Update, update_ui_text)
         .add_systems(Update, rise_stack)
@@ -73,6 +78,7 @@ fn setup(mut commands: Commands, mut grid: ResMut<Grid>) {
     commands.insert_resource(BlockSprites { entities: sprites });
     commands.insert_resource(CursorSprite(cursor_sprite));
     commands.insert_resource(ui_texts);
+    commands.insert_resource(PanelEntity(panel));
 }
 
 fn handle_input(
@@ -244,8 +250,8 @@ fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
         .spawn(NodeBundle {
             style: Style {
                 position_type: PositionType::Absolute,
-                right: Val::Px(PANEL_GAP),
-                top: Val::Px(PANEL_GAP),
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
                 width: Val::Px(PANEL_WIDTH),
                 height: Val::Px(grid_h + FRAME_THICKNESS * 2.0),
                 flex_direction: FlexDirection::Column,
@@ -350,6 +356,31 @@ fn update_ui_text(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+fn update_panel_layout(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    panel: Res<PanelEntity>,
+    mut style_query: Query<&mut Style>,
+) {
+    let window = match windows.get_single() {
+        Ok(window) => window,
+        Err(_) => return,
+    };
+
+    let grid_w = GRID_W as f32 * CELL_SIZE;
+    let grid_h = GRID_H as f32 * CELL_SIZE;
+    let panel_w = PANEL_WIDTH;
+    let panel_h = grid_h + FRAME_THICKNESS * 2.0;
+    let left = (window.width() / 2.0) + (grid_w / 2.0) + PANEL_GAP;
+    let top = (window.height() - panel_h) / 2.0;
+
+    if let Ok(mut style) = style_query.get_mut(panel.0) {
+        style.left = Val::Px(left);
+        style.top = Val::Px(top.max(0.0));
+        style.width = Val::Px(panel_w);
+        style.height = Val::Px(panel_h);
     }
 }
 
