@@ -64,6 +64,9 @@ struct PanelEntity(Entity);
 #[derive(Resource)]
 struct MenuRoot(Entity);
 
+#[derive(Component)]
+struct GameEntity;
+
 #[derive(Resource, Default)]
 struct GameOver(bool);
 
@@ -92,9 +95,11 @@ fn main() {
         .add_systems(OnEnter(AppState::Title), setup_menu)
         .add_systems(OnExit(AppState::Title), cleanup_menu)
         .add_systems(OnEnter(AppState::Game), setup_game)
+        .add_systems(OnExit(AppState::Game), cleanup_game)
         .add_systems(Update, handle_menu_input.run_if(in_state(AppState::Title)))
         .add_systems(Update, handle_input.run_if(in_state(AppState::Game)))
         .add_systems(Update, handle_restart.run_if(in_state(AppState::Game)))
+        .add_systems(Update, handle_game_over_back.run_if(in_state(AppState::Game)))
         .add_systems(Update, apply_gravity_system.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_time.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_game_over_timer.run_if(in_state(AppState::Game)))
@@ -173,6 +178,12 @@ fn setup_menu(mut commands: Commands) {
 
 fn cleanup_menu(mut commands: Commands, menu: Res<MenuRoot>) {
     commands.entity(menu.0).despawn_recursive();
+}
+
+fn cleanup_game(mut commands: Commands, entities: Query<Entity, With<GameEntity>>) {
+    for entity in &entities {
+        commands.entity(entity).despawn_recursive();
+    }
 }
 
 fn handle_menu_input(
@@ -313,14 +324,18 @@ fn handle_restart(
     if game_over_timer.seconds < 1.0 {
         return;
     }
-    let keyboard_pressed = keys.get_just_pressed().next().is_some();
-    let gamepad_pressed = buttons
+    let keyboard_restart = keys
+        .get_just_pressed()
+        .any(|k| *k != KeyCode::Escape);
+    let gamepad_restart = buttons
         .get_just_pressed()
         .any(|b| !matches!(b.button_type, GamepadButtonType::DPadUp
             | GamepadButtonType::DPadDown
             | GamepadButtonType::DPadLeft
-            | GamepadButtonType::DPadRight));
-    if keyboard_pressed || gamepad_pressed {
+            | GamepadButtonType::DPadRight
+            | GamepadButtonType::Start
+            | GamepadButtonType::Select));
+    if keyboard_restart || gamepad_restart {
         grid.clear();
         grid.fill_test_pattern();
         *cursor = Cursor::new(0, 0);
@@ -334,6 +349,29 @@ fn handle_restart(
         elapsed.0 = 0.0;
         game_over_timer.seconds = 0.0;
         game_over.0 = false;
+    }
+}
+
+fn handle_game_over_back(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
+    game_over: Res<GameOver>,
+    game_over_timer: Res<GameOverTimer>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if !game_over.0 || game_over_timer.seconds < 1.0 {
+        return;
+    }
+    let escape = keys.just_pressed(KeyCode::Escape);
+    let mut gamepad = false;
+    for button in buttons.get_just_pressed() {
+        if matches!(button.button_type, GamepadButtonType::Start | GamepadButtonType::Select) {
+            gamepad = true;
+            break;
+        }
+    }
+    if escape || gamepad {
+        next_state.set(AppState::Title);
     }
 }
 
@@ -447,6 +485,7 @@ fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {
                     transform: Transform::from_translation(pos),
                     ..Default::default()
                 })
+                .insert(GameEntity)
                 .id();
             entities.push(entity);
         }
@@ -458,7 +497,8 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
     for y in 0..grid.height {
         for x in 0..grid.width {
             let pos = cell_center(grid, x, y);
-            commands.spawn(SpriteBundle {
+            commands
+                .spawn(SpriteBundle {
                 sprite: Sprite {
                     color: Color::srgba(0.1, 0.1, 0.12, 0.35),
                     custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
@@ -466,7 +506,8 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
                 },
                 transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
                 ..Default::default()
-            });
+            })
+            .insert(GameEntity);
         }
     }
 }
@@ -492,7 +533,8 @@ fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
         (left, vertical_size),
         (right, vertical_size),
     ] {
-        commands.spawn(SpriteBundle {
+        commands
+            .spawn(SpriteBundle {
             sprite: Sprite {
                 color: border_color,
                 custom_size: Some(size),
@@ -500,7 +542,8 @@ fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
             },
             transform: Transform::from_translation(pos),
             ..Default::default()
-        });
+        })
+        .insert(GameEntity);
     }
 
     let panel = commands
@@ -517,10 +560,12 @@ fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
             background_color: BackgroundColor(Color::srgb(0.07, 0.07, 0.09)),
             ..Default::default()
         })
+        .insert(GameEntity)
         .id();
 
     commands.entity(panel).with_children(|parent| {
-        parent.spawn(NodeBundle {
+        parent
+            .spawn(NodeBundle {
             style: Style {
                 width: Val::Percent(100.0),
                 height: Val::Px(28.0),
@@ -528,7 +573,8 @@ fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
             },
             background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
             ..Default::default()
-        });
+        })
+        .insert(GameEntity);
     });
 
     panel
@@ -551,6 +597,7 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
             },
             ..Default::default()
         })
+        .insert(GameEntity)
         .set_parent(panel)
         .id();
 
@@ -563,6 +610,7 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
             },
             ..Default::default()
         })
+        .insert(GameEntity)
         .set_parent(panel)
         .id();
 
@@ -583,6 +631,7 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
             visibility: Visibility::Hidden,
             ..Default::default()
         })
+        .insert(GameEntity)
         .set_parent(panel)
         .id();
 
@@ -652,6 +701,7 @@ fn spawn_cursor(commands: &mut Commands) -> Entity {
             transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
             ..Default::default()
         })
+        .insert(GameEntity)
         .id()
 }
 
