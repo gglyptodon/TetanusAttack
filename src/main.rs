@@ -11,6 +11,11 @@ const CELL_SIZE: f32 = 32.0;
 const FRAME_THICKNESS: f32 = 4.0;
 const PANEL_WIDTH: f32 = 140.0;
 const PANEL_GAP: f32 = 16.0;
+const PLAYER_GAP: f32 = 80.0;
+const RISE_SECONDS: f32 = 2.5;
+const GRAVITY_STEP_SECONDS: f32 = 0.1;
+const CLEAR_DELAY_SECONDS: f32 = 0.1;
+const RISE_PAUSE_SECONDS: f32 = 0.6;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 enum AppState {
@@ -20,50 +25,97 @@ enum AppState {
     Pause,
 }
 
-#[derive(Resource)]
-struct BlockSprites {
-    entities: Vec<Entity>,
+#[derive(Resource, Debug, Clone, Copy, Eq, PartialEq)]
+enum GameMode {
+    OnePlayer,
+    TwoPlayer,
+}
+
+#[derive(Resource, Default)]
+struct MenuSelection {
+    two_player: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+enum PlayerId {
+    P1,
+    P2,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PanelSide {
+    Left,
+    Right,
 }
 
 #[derive(Resource)]
-struct CursorSprite(Entity);
+struct Players {
+    p1: PlayerState,
+    p2: PlayerState,
+}
 
 #[derive(Resource)]
-struct RiseTimer(Timer);
+struct PlayerViews {
+    p1: PlayerView,
+    p2: Option<PlayerView>,
+}
 
-#[derive(Resource)]
-struct GravityTimer(Timer);
+struct PlayerState {
+    grid: Grid,
+    cursor: Cursor,
+    score: u32,
+    elapsed: f32,
+    pending_clear: bool,
+    settled: bool,
+    clear_timer: Timer,
+    gravity_timer: Timer,
+    rise_timer: Timer,
+    rise_pause_timer: Timer,
+    rise_paused: bool,
+}
 
-#[derive(Resource)]
-struct ClearDelayTimer(Timer);
-
-#[derive(Resource, Default)]
-struct PendingClear(bool);
-
-#[derive(Resource)]
-struct RisePauseTimer(Timer);
-
-#[derive(Resource, Default)]
-struct RisePaused(bool);
-
-#[derive(Resource, Default)]
-struct Score(u32);
-
-#[derive(Resource, Default)]
-struct ElapsedTime(f32);
+impl PlayerState {
+    fn new() -> Self {
+        Self {
+            grid: Grid::new(GRID_W, GRID_H),
+            cursor: Cursor::new(0, 0),
+            score: 0,
+            elapsed: 0.0,
+            pending_clear: false,
+            settled: true,
+            clear_timer: Timer::from_seconds(CLEAR_DELAY_SECONDS, TimerMode::Repeating),
+            gravity_timer: Timer::from_seconds(GRAVITY_STEP_SECONDS, TimerMode::Repeating),
+            rise_timer: Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating),
+            rise_pause_timer: Timer::from_seconds(RISE_PAUSE_SECONDS, TimerMode::Repeating),
+            rise_paused: false,
+        }
+    }
+}
 
 #[derive(Resource)]
 struct UiTexts {
     score: Entity,
     timer: Entity,
-    game_over: Entity,
+    status: Entity,
+}
+
+struct PlayerView {
+    blocks: Vec<Entity>,
+    cursor: Entity,
+    panel: Entity,
+    ui: UiTexts,
+    origin: Vec2,
+    panel_side: PanelSide,
 }
 
 #[derive(Resource)]
-struct PanelEntity(Entity);
+struct MenuRoot(Entity);
 
 #[derive(Resource)]
-struct MenuRoot(Entity);
+struct MenuTextEntities {
+    one_player: Entity,
+    two_player: Entity,
+}
 
 #[derive(Resource)]
 struct PauseRoot(Entity);
@@ -75,10 +127,13 @@ struct GameEntity;
 struct GameInitialized(bool);
 
 #[derive(Resource, Default)]
-struct GameOver(bool);
+struct MatchOver {
+    active: bool,
+    winner: Option<PlayerId>,
+}
 
 #[derive(Resource, Default)]
-struct GameOverTimer {
+struct MatchOverTimer {
     seconds: f32,
 }
 
@@ -86,18 +141,14 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_state::<AppState>()
-        .insert_resource(Grid::new(GRID_W, GRID_H))
-        .insert_resource(Cursor::new(0, 0))
-        .insert_resource(RiseTimer(Timer::from_seconds(2.5, TimerMode::Repeating)))
-        .insert_resource(RisePauseTimer(Timer::from_seconds(0.6, TimerMode::Repeating)))
-        .insert_resource(RisePaused::default())
-        .insert_resource(GravityTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
-        .insert_resource(ClearDelayTimer(Timer::from_seconds(0.01, TimerMode::Repeating)))
-        .insert_resource(PendingClear::default())
-        .insert_resource(Score::default())
-        .insert_resource(ElapsedTime::default())
-        .insert_resource(GameOver::default())
-        .insert_resource(GameOverTimer::default())
+        .insert_resource(Players {
+            p1: PlayerState::new(),
+            p2: PlayerState::new(),
+        })
+        .insert_resource(GameMode::OnePlayer)
+        .insert_resource(MenuSelection::default())
+        .insert_resource(MatchOver::default())
+        .insert_resource(MatchOverTimer::default())
         .insert_resource(GameInitialized::default())
         .add_systems(Startup, setup_camera)
         .add_systems(OnEnter(AppState::Title), (cleanup_game, setup_menu).chain())
@@ -118,6 +169,7 @@ fn main() {
         .add_systems(Update, update_visuals.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_ui_text.run_if(in_state(AppState::Game)))
         .add_systems(Update, rise_stack.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_clear_delay.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_rise_pause.run_if(in_state(AppState::Game)))
         .run();
 }
@@ -126,7 +178,7 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
 }
 
-fn setup_menu(mut commands: Commands) {
+fn setup_menu(mut commands: Commands, selection: Res<MenuSelection>) {
     let root = commands
         .spawn(NodeBundle {
             style: Style {
@@ -146,6 +198,8 @@ fn setup_menu(mut commands: Commands) {
         })
         .id();
 
+    let mut one_player = None;
+    let mut two_player = None;
     commands.entity(root).with_children(|parent| {
         parent.spawn(TextBundle {
             text: Text::from_section(
@@ -159,17 +213,37 @@ fn setup_menu(mut commands: Commands) {
             ..Default::default()
         });
 
-        parent.spawn(TextBundle {
+        one_player = Some(parent.spawn(TextBundle {
             text: Text::from_section(
                 "1 PLAYER",
                 TextStyle {
                     font: Default::default(),
                     font_size: 28.0,
-                    color: Color::srgb(0.2, 0.9, 0.6),
+                    color: if selection.two_player {
+                        Color::srgb(0.7, 0.7, 0.75)
+                    } else {
+                        Color::srgb(0.2, 0.9, 0.6)
+                    },
                 },
             ),
             ..Default::default()
-        });
+        }).id());
+
+        two_player = Some(parent.spawn(TextBundle {
+            text: Text::from_section(
+                "2 PLAYER",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 28.0,
+                    color: if selection.two_player {
+                        Color::srgb(0.2, 0.9, 0.6)
+                    } else {
+                        Color::srgb(0.7, 0.7, 0.75)
+                    },
+                },
+            ),
+            ..Default::default()
+        }).id());
 
         parent.spawn(TextBundle {
             text: Text::from_section(
@@ -185,10 +259,20 @@ fn setup_menu(mut commands: Commands) {
     });
 
     commands.insert_resource(MenuRoot(root));
+    if let (Some(one_player), Some(two_player)) = (one_player, two_player) {
+        commands.insert_resource(MenuTextEntities { one_player, two_player });
+    }
 }
 
-fn cleanup_menu(mut commands: Commands, menu: Res<MenuRoot>) {
+fn cleanup_menu(
+    mut commands: Commands,
+    menu: Res<MenuRoot>,
+    menu_texts: Option<Res<MenuTextEntities>>,
+) {
     commands.entity(menu.0).despawn_recursive();
+    if let Some(menu_texts) = menu_texts {
+        commands.remove_resource::<MenuTextEntities>();
+    }
 }
 
 fn setup_pause(mut commands: Commands) {
@@ -226,7 +310,7 @@ fn setup_pause(mut commands: Commands) {
 
         parent.spawn(TextBundle {
             text: Text::from_section(
-                "Press Esc / Start\nto Resume",
+                "Press Esc / Tab / Start\nto Resume",
                 TextStyle {
                     font: Default::default(),
                     font_size: 18.0,
@@ -259,8 +343,47 @@ fn handle_menu_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
     gamepads: Res<Gamepads>,
+    mut selection: ResMut<MenuSelection>,
+    mut mode: ResMut<GameMode>,
+    menu_texts: Res<MenuTextEntities>,
+    mut text_query: Query<&mut Text>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let mut changed = false;
+    if keys.just_pressed(KeyCode::ArrowUp)
+        || keys.just_pressed(KeyCode::ArrowDown)
+        || keys.just_pressed(KeyCode::KeyW)
+        || keys.just_pressed(KeyCode::KeyS)
+    {
+        selection.two_player = !selection.two_player;
+        changed = true;
+    }
+    for gamepad_id in gamepads.iter() {
+        if buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::DPadUp))
+            || buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::DPadDown))
+        {
+            selection.two_player = !selection.two_player;
+            changed = true;
+            break;
+        }
+    }
+    if changed {
+        if let Ok(mut text) = text_query.get_mut(menu_texts.one_player) {
+            text.sections[0].style.color = if selection.two_player {
+                Color::srgb(0.7, 0.7, 0.75)
+            } else {
+                Color::srgb(0.2, 0.9, 0.6)
+            };
+        }
+        if let Ok(mut text) = text_query.get_mut(menu_texts.two_player) {
+            text.sections[0].style.color = if selection.two_player {
+                Color::srgb(0.2, 0.9, 0.6)
+            } else {
+                Color::srgb(0.7, 0.7, 0.75)
+            };
+        }
+    }
+
     let keyboard = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space);
     let mut gamepad = false;
     for gamepad_id in gamepads.iter() {
@@ -268,6 +391,11 @@ fn handle_menu_input(
         gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::South));
     }
     if keyboard || gamepad {
+        *mode = if selection.two_player {
+            GameMode::TwoPlayer
+        } else {
+            GameMode::OnePlayer
+        };
         next_state.set(AppState::Game);
     }
 }
@@ -278,7 +406,7 @@ fn handle_pause_input(
     gamepads: Res<Gamepads>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let keyboard = keys.just_pressed(KeyCode::Escape);
+    let keyboard = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Tab);
     let mut gamepad = false;
     for gamepad_id in gamepads.iter() {
         gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
@@ -292,13 +420,13 @@ fn handle_pause_request(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
     gamepads: Res<Gamepads>,
-    game_over: Res<GameOver>,
+    match_over: Res<MatchOver>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if game_over.0 {
+    if match_over.active {
         return;
     }
-    let keyboard = keys.just_pressed(KeyCode::Escape);
+    let keyboard = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Tab);
     let mut gamepad = false;
     for gamepad_id in gamepads.iter() {
         gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
@@ -310,133 +438,216 @@ fn handle_pause_request(
 
 fn setup_game(
     mut commands: Commands,
-    mut grid: ResMut<Grid>,
-    mut cursor: ResMut<Cursor>,
-    mut pending_clear: ResMut<PendingClear>,
-    mut clear_timer: ResMut<ClearDelayTimer>,
-    mut score: ResMut<Score>,
-    mut elapsed: ResMut<ElapsedTime>,
-    mut game_over: ResMut<GameOver>,
-    mut game_over_timer: ResMut<GameOverTimer>,
-    mut rise_timer: ResMut<RiseTimer>,
-    mut rise_pause_timer: ResMut<RisePauseTimer>,
-    mut rise_paused: ResMut<RisePaused>,
-    mut gravity_timer: ResMut<GravityTimer>,
+    mut players: ResMut<Players>,
+    mode: Res<GameMode>,
+    mut match_over: ResMut<MatchOver>,
+    mut match_over_timer: ResMut<MatchOverTimer>,
     mut initialized: ResMut<GameInitialized>,
 ) {
     if initialized.0 {
         return;
     }
-    grid.clear();
-    grid.fill_test_pattern();
-    *cursor = Cursor::new(0, 0);
-    pending_clear.0 = false;
-    clear_timer.0.reset();
-    score.0 = 0;
-    elapsed.0 = 0.0;
-    game_over.0 = false;
-    game_over_timer.seconds = 0.0;
-    rise_timer.0.reset();
-    rise_pause_timer.0.reset();
-    rise_paused.0 = false;
-    gravity_timer.0.reset();
+    reset_player(&mut players.p1);
+    reset_player(&mut players.p2);
+    match_over.active = false;
+    match_over.winner = None;
+    match_over_timer.seconds = 0.0;
 
-    let panel = spawn_frame_and_panel(&mut commands);
-    spawn_background_grid(&mut commands, &grid);
-    let sprites = spawn_grid(&mut commands, &grid);
-    let cursor_sprite = spawn_cursor(&mut commands);
-    let ui_texts = spawn_ui_texts(&mut commands, panel);
-    commands.insert_resource(BlockSprites { entities: sprites });
-    commands.insert_resource(CursorSprite(cursor_sprite));
-    commands.insert_resource(ui_texts);
-    commands.insert_resource(PanelEntity(panel));
+    let (p1_origin, p2_origin) = compute_player_origins(*mode);
+
+    let p1_view = spawn_player_view(
+        &mut commands,
+        &players.p1.grid,
+        p1_origin,
+        PanelSide::Right,
+    );
+
+    let p2_view = if *mode == GameMode::TwoPlayer {
+        Some(spawn_player_view(
+            &mut commands,
+            &players.p2.grid,
+            p2_origin,
+            PanelSide::Left,
+        ))
+    } else {
+        None
+    };
+
+    commands.insert_resource(PlayerViews { p1: p1_view, p2: p2_view });
     initialized.0 = true;
+}
+
+fn reset_player(player: &mut PlayerState) {
+    player.grid.clear();
+    player.grid.fill_test_pattern();
+    player.cursor = Cursor::new(0, 0);
+    player.score = 0;
+    player.elapsed = 0.0;
+    player.pending_clear = false;
+    player.settled = true;
+    player.clear_timer.reset();
+    player.gravity_timer.reset();
+    player.rise_timer.reset();
+    player.rise_pause_timer.reset();
+    player.rise_paused = false;
+}
+
+fn compute_player_origins(mode: GameMode) -> (Vec2, Vec2) {
+    let grid_w = GRID_W as f32 * CELL_SIZE;
+    let total_player_w = grid_w + PANEL_WIDTH + PANEL_GAP;
+    match mode {
+        GameMode::OnePlayer => (Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0)),
+        GameMode::TwoPlayer => {
+            let p2_center_x = -(total_player_w / 2.0 + PLAYER_GAP / 2.0);
+            let p1_center_x = total_player_w / 2.0 + PLAYER_GAP / 2.0;
+
+            let p1_grid_center_x = p1_center_x - total_player_w / 2.0 + grid_w / 2.0;
+            let p2_grid_center_x =
+                p2_center_x - total_player_w / 2.0 + PANEL_WIDTH + PANEL_GAP + grid_w / 2.0;
+
+            (
+                Vec2::new(p1_grid_center_x, 0.0),
+                Vec2::new(p2_grid_center_x, 0.0),
+            )
+        }
+    }
+}
+
+fn spawn_player_view(
+    commands: &mut Commands,
+    grid: &Grid,
+    origin: Vec2,
+    panel_side: PanelSide,
+) -> PlayerView {
+    let panel = spawn_frame_and_panel(commands, origin, panel_side);
+    spawn_background_grid(commands, grid, origin);
+    let blocks = spawn_grid(commands, grid, origin);
+    let cursor = spawn_cursor(commands, origin);
+    let ui = spawn_ui_texts(commands, panel);
+    PlayerView {
+        blocks,
+        cursor,
+        panel,
+        ui,
+        origin,
+        panel_side,
+    }
 }
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
     gamepads: Res<Gamepads>,
-    mut grid: ResMut<Grid>,
-    mut cursor: ResMut<Cursor>,
-    game_over: Res<GameOver>,
-    mut pending_clear: ResMut<PendingClear>,
-    mut clear_timer: ResMut<ClearDelayTimer>,
+    mut players: ResMut<Players>,
+    mode: Res<GameMode>,
+    match_over: Res<MatchOver>,
 ) {
-    if game_over.0 {
+    if match_over.active {
         return;
     }
+    handle_keyboard_p1(keys.as_ref(), &mut players.p1);
+    if *mode == GameMode::TwoPlayer {
+        handle_keyboard_p2(keys.as_ref(), &mut players.p2);
+    }
+
+    let gamepad_ids: Vec<_> = gamepads.iter().collect();
+    if let Some(gamepad) = gamepad_ids.get(0) {
+        handle_gamepad(*gamepad, buttons.as_ref(), &mut players.p1);
+    }
+    if *mode == GameMode::TwoPlayer {
+        if let Some(gamepad) = gamepad_ids.get(1) {
+            handle_gamepad(*gamepad, buttons.as_ref(), &mut players.p2);
+        }
+    }
+}
+
+fn handle_keyboard_p1(keys: &ButtonInput<KeyCode>, player: &mut PlayerState) {
     if keys.just_pressed(KeyCode::ArrowLeft) {
-        cursor.move_by(-1, 0, grid.width, grid.height);
+        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
     }
     if keys.just_pressed(KeyCode::ArrowRight) {
-        cursor.move_by(1, 0, grid.width, grid.height);
+        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
     }
     if keys.just_pressed(KeyCode::ArrowUp) {
-        cursor.move_by(0, 1, grid.width, grid.height);
+        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
     }
     if keys.just_pressed(KeyCode::ArrowDown) {
-        cursor.move_by(0, -1, grid.width, grid.height);
+        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
+    }
+    if keys.just_pressed(KeyCode::Space) {
+        try_swap(player);
+    }
+}
+
+fn handle_keyboard_p2(keys: &ButtonInput<KeyCode>, player: &mut PlayerState) {
+    if keys.just_pressed(KeyCode::KeyA) {
+        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
+    }
+    if keys.just_pressed(KeyCode::KeyD) {
+        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
+    }
+    if keys.just_pressed(KeyCode::KeyW) {
+        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
+    }
+    if keys.just_pressed(KeyCode::KeyS) {
+        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
+    }
+    if keys.just_pressed(KeyCode::ShiftLeft) {
+        try_swap(player);
+    }
+}
+
+fn handle_gamepad(
+    gamepad: Gamepad,
+    buttons: &ButtonInput<GamepadButton>,
+    player: &mut PlayerState,
+) {
+    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadLeft)) {
+        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
+    }
+    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadRight)) {
+        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
+    }
+    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadUp)) {
+        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
+    }
+    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadDown)) {
+        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
     }
 
-    let mut swap_pressed = keys.just_pressed(KeyCode::Space);
-
-    for gamepad in gamepads.iter() {
-        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadLeft)) {
-            cursor.move_by(-1, 0, grid.width, grid.height);
-        }
-        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadRight)) {
-            cursor.move_by(1, 0, grid.width, grid.height);
-        }
-        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadUp)) {
-            cursor.move_by(0, 1, grid.width, grid.height);
-        }
-        if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadDown)) {
-            cursor.move_by(0, -1, grid.width, grid.height);
-        }
-
-        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::South));
-        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::East));
-        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::West));
-        swap_pressed |= buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::North));
+    let swap = buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::South))
+        || buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::East))
+        || buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::West))
+        || buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::North));
+    if swap {
+        try_swap(player);
     }
+}
 
-    if swap_pressed {
-        let cmd = SwapCmd::right_of(cursor.x, cursor.y);
-        if grid.swap_in_bounds(cmd) {
-            if grid.has_matches() {
-                pending_clear.0 = true;
-                clear_timer.0.reset();
-            }
-        }
+fn try_swap(player: &mut PlayerState) {
+    let cmd = SwapCmd::right_of(player.cursor.x, player.cursor.y);
+    if player.grid.swap_in_bounds(cmd) && player.grid.has_matches() {
+        player.pending_clear = true;
+        player.clear_timer.reset();
     }
 }
 
 fn handle_restart(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
-    mut grid: ResMut<Grid>,
-    mut cursor: ResMut<Cursor>,
-    mut rise_timer: ResMut<RiseTimer>,
-    mut rise_pause_timer: ResMut<RisePauseTimer>,
-    mut rise_paused: ResMut<RisePaused>,
-    mut gravity_timer: ResMut<GravityTimer>,
-    mut clear_timer: ResMut<ClearDelayTimer>,
-    mut pending_clear: ResMut<PendingClear>,
-    mut game_over: ResMut<GameOver>,
-    mut score: ResMut<Score>,
-    mut elapsed: ResMut<ElapsedTime>,
-    mut game_over_timer: ResMut<GameOverTimer>,
+    mut players: ResMut<Players>,
+    mut match_over: ResMut<MatchOver>,
+    mut match_over_timer: ResMut<MatchOverTimer>,
 ) {
-    if !game_over.0 {
+    if !match_over.active {
         return;
     }
-    if game_over_timer.seconds < 1.0 {
+    if match_over_timer.seconds < 1.0 {
         return;
     }
-    let keyboard_restart = keys
-        .get_just_pressed()
-        .any(|k| *k != KeyCode::Escape);
+    let keyboard_restart = keys.get_just_pressed().any(|k| {
+        *k != KeyCode::Escape && *k != KeyCode::Tab
+    });
     let gamepad_restart = buttons
         .get_just_pressed()
         .any(|b| !matches!(b.button_type, GamepadButtonType::DPadUp
@@ -444,38 +655,34 @@ fn handle_restart(
             | GamepadButtonType::DPadLeft
             | GamepadButtonType::DPadRight
             | GamepadButtonType::Start
-            | GamepadButtonType::Select));
+            | GamepadButtonType::Select
+            | GamepadButtonType::Mode));
     if keyboard_restart || gamepad_restart {
-        grid.clear();
-        grid.fill_test_pattern();
-        *cursor = Cursor::new(0, 0);
-        rise_timer.0.reset();
-        rise_pause_timer.0.reset();
-        rise_paused.0 = false;
-        gravity_timer.0.reset();
-        clear_timer.0.reset();
-        pending_clear.0 = false;
-        score.0 = 0;
-        elapsed.0 = 0.0;
-        game_over_timer.seconds = 0.0;
-        game_over.0 = false;
+        reset_player(&mut players.p1);
+        reset_player(&mut players.p2);
+        match_over_timer.seconds = 0.0;
+        match_over.active = false;
+        match_over.winner = None;
     }
 }
 
 fn handle_game_over_back(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
-    game_over: Res<GameOver>,
-    game_over_timer: Res<GameOverTimer>,
+    match_over: Res<MatchOver>,
+    match_over_timer: Res<MatchOverTimer>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if !game_over.0 || game_over_timer.seconds < 1.0 {
+    if !match_over.active || match_over_timer.seconds < 1.0 {
         return;
     }
     let escape = keys.just_pressed(KeyCode::Escape);
     let mut gamepad = false;
     for button in buttons.get_just_pressed() {
-        if matches!(button.button_type, GamepadButtonType::Start | GamepadButtonType::Select) {
+        if matches!(
+            button.button_type,
+            GamepadButtonType::Start | GamepadButtonType::Select | GamepadButtonType::Mode
+        ) {
             gamepad = true;
             break;
         }
@@ -487,104 +694,172 @@ fn handle_game_over_back(
 
 fn rise_stack(
     time: Res<Time>,
-    mut timer: ResMut<RiseTimer>,
-    mut grid: ResMut<Grid>,
-    mut game_over: ResMut<GameOver>,
-    mut cursor: ResMut<Cursor>,
-    mut pending_clear: ResMut<PendingClear>,
-    mut clear_timer: ResMut<ClearDelayTimer>,
-    mut game_over_timer: ResMut<GameOverTimer>,
-    rise_paused: Res<RisePaused>,
+    mut players: ResMut<Players>,
+    mut match_over: ResMut<MatchOver>,
+    mut match_over_timer: ResMut<MatchOverTimer>,
+    mode: Res<GameMode>,
 ) {
-    if timer.0.tick(time.delta()).just_finished() {
-        if rise_paused.0 {
-            return;
-        }
-        if grid.top_row_occupied() {
-            game_over.0 = true;
-            game_over_timer.seconds = 0.0;
-            return;
-        }
-        grid.push_bottom_row();
-        if cursor.y + 1 < grid.height {
-            cursor.y += 1;
-        }
-        if grid.has_matches() {
-            pending_clear.0 = true;
-            clear_timer.0.reset();
-        }
-    }
-}
-
-fn update_time(time: Res<Time>, mut elapsed: ResMut<ElapsedTime>, game_over: Res<GameOver>) {
-    if game_over.0 {
+    if match_over.active {
         return;
     }
-    elapsed.0 += time.delta_seconds();
+    let delta = time.delta();
+    let p1_over = rise_player(delta, &mut players.p1);
+    let p2_over = if *mode == GameMode::TwoPlayer {
+        rise_player(delta, &mut players.p2)
+    } else {
+        false
+    };
+
+    if p1_over {
+        match_over.active = true;
+        match_over.winner = if *mode == GameMode::TwoPlayer {
+            Some(PlayerId::P2)
+        } else {
+            None
+        };
+        match_over_timer.seconds = 0.0;
+    } else if p2_over {
+        match_over.active = true;
+        match_over.winner = Some(PlayerId::P1);
+        match_over_timer.seconds = 0.0;
+    }
 }
 
-fn update_game_over_timer(time: Res<Time>, mut timer: ResMut<GameOverTimer>, game_over: Res<GameOver>) {
-    if game_over.0 && timer.seconds < 1.0 {
+fn rise_player(delta: std::time::Duration, player: &mut PlayerState) -> bool {
+    if player.rise_timer.tick(delta).just_finished() {
+        if player.rise_paused {
+            return false;
+        }
+        if player.grid.top_row_occupied() {
+            return true;
+        }
+        player.grid.push_bottom_row();
+        if player.cursor.y + 1 < player.grid.height {
+            player.cursor.y += 1;
+        }
+        if player.grid.has_matches() {
+            player.pending_clear = true;
+            player.clear_timer.reset();
+        }
+    }
+    false
+}
+
+fn update_time(
+    time: Res<Time>,
+    mut players: ResMut<Players>,
+    match_over: Res<MatchOver>,
+    mode: Res<GameMode>,
+) {
+    if match_over.active {
+        return;
+    }
+    let delta = time.delta_seconds();
+    players.p1.elapsed += delta;
+    if *mode == GameMode::TwoPlayer {
+        players.p2.elapsed += delta;
+    }
+}
+
+fn update_game_over_timer(
+    time: Res<Time>,
+    mut timer: ResMut<MatchOverTimer>,
+    match_over: Res<MatchOver>,
+) {
+    if match_over.active && timer.seconds < 1.0 {
         timer.seconds += time.delta_seconds();
     }
 }
 
 fn apply_gravity_system(
     time: Res<Time>,
-    mut timer: ResMut<GravityTimer>,
-    mut grid: ResMut<Grid>,
-    game_over: Res<GameOver>,
-    mut score: ResMut<Score>,
-    mut pending_clear: ResMut<PendingClear>,
-    mut clear_timer: ResMut<ClearDelayTimer>,
-    mut rise_paused: ResMut<RisePaused>,
-    mut rise_pause_timer: ResMut<RisePauseTimer>,
+    mut players: ResMut<Players>,
+    match_over: Res<MatchOver>,
+    mode: Res<GameMode>,
 ) {
-    if game_over.0 {
+    if match_over.active {
         return;
     }
-    if timer.0.tick(time.delta()).just_finished() {
-        let moved = grid.apply_gravity_step();
+    process_player_gravity(time.delta(), &mut players.p1);
+    if *mode == GameMode::TwoPlayer {
+        process_player_gravity(time.delta(), &mut players.p2);
+    }
+}
+
+fn process_player_gravity(delta: std::time::Duration, player: &mut PlayerState) {
+    if player.gravity_timer.tick(delta).just_finished() {
+        let moved = player.grid.apply_gravity_step();
         if !moved {
-            if pending_clear.0 {
-                if clear_timer.0.tick(time.delta()).just_finished() {
-                    let cleared = grid.clear_matches_once();
-                    if cleared > 0 {
-                        rise_paused.0 = true;
-                        rise_pause_timer.0.reset();
-                        score.0 += cleared;
-                    }
-                    pending_clear.0 = false;
-                }
-            } else if grid.has_matches() {
-                pending_clear.0 = true;
-                clear_timer.0.reset();
+            player.settled = true;
+            if !player.pending_clear && player.grid.has_matches() {
+                player.pending_clear = true;
+                player.clear_timer.reset();
             }
         } else {
-            pending_clear.0 = false;
+            player.settled = false;
+            player.pending_clear = false;
         }
+    }
+}
+
+fn update_clear_delay(
+    time: Res<Time>,
+    mut players: ResMut<Players>,
+    match_over: Res<MatchOver>,
+    mode: Res<GameMode>,
+) {
+    if match_over.active {
+        return;
+    }
+    let delta = time.delta();
+    process_clear_delay(delta, &mut players.p1);
+    if *mode == GameMode::TwoPlayer {
+        process_clear_delay(delta, &mut players.p2);
+    }
+}
+
+fn process_clear_delay(delta: std::time::Duration, player: &mut PlayerState) {
+    if !player.pending_clear || !player.settled {
+        return;
+    }
+    if player.clear_timer.tick(delta).just_finished() {
+        let cleared = player.grid.clear_matches_once();
+        if cleared > 0 {
+            player.rise_paused = true;
+            player.rise_pause_timer.reset();
+            player.score += cleared;
+        }
+        player.pending_clear = false;
     }
 }
 
 fn update_rise_pause(
     time: Res<Time>,
-    mut rise_pause_timer: ResMut<RisePauseTimer>,
-    mut rise_paused: ResMut<RisePaused>,
-    game_over: Res<GameOver>,
+    mut players: ResMut<Players>,
+    match_over: Res<MatchOver>,
+    mode: Res<GameMode>,
 ) {
-    if game_over.0 {
+    if match_over.active {
         return;
     }
-    if rise_paused.0 && rise_pause_timer.0.tick(time.delta()).just_finished() {
-        rise_paused.0 = false;
+    let delta = time.delta();
+    tick_rise_pause(delta, &mut players.p1);
+    if *mode == GameMode::TwoPlayer {
+        tick_rise_pause(delta, &mut players.p2);
     }
 }
 
-fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {
+fn tick_rise_pause(delta: std::time::Duration, player: &mut PlayerState) {
+    if player.rise_paused && player.rise_pause_timer.tick(delta).just_finished() {
+        player.rise_paused = false;
+    }
+}
+
+fn spawn_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) -> Vec<Entity> {
     let mut entities = Vec::with_capacity(grid.width * grid.height);
     for y in 0..grid.height {
         for x in 0..grid.width {
-            let pos = cell_center(grid, x, y);
+            let pos = cell_center(grid, x, y, origin);
             let entity = commands
                 .spawn(SpriteBundle {
                     sprite: Sprite {
@@ -603,10 +878,10 @@ fn spawn_grid(commands: &mut Commands, grid: &Grid) -> Vec<Entity> {
     entities
 }
 
-fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
+fn spawn_background_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) {
     for y in 0..grid.height {
         for x in 0..grid.width {
-            let pos = cell_center(grid, x, y);
+            let pos = cell_center(grid, x, y, origin);
             commands
                 .spawn(SpriteBundle {
                 sprite: Sprite {
@@ -622,17 +897,18 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid) {
     }
 }
 
-fn spawn_frame_and_panel(commands: &mut Commands) -> Entity {
+fn spawn_frame_and_panel(commands: &mut Commands, origin: Vec2, _panel_side: PanelSide) -> Entity {
     let grid_w = GRID_W as f32 * CELL_SIZE;
     let grid_h = GRID_H as f32 * CELL_SIZE;
     let half_w = grid_w / 2.0;
     let half_h = grid_h / 2.0;
     let border_color = Color::srgb(0.12, 0.12, 0.16);
 
-    let top = Vec3::new(0.0, half_h + FRAME_THICKNESS / 2.0, -0.5);
-    let bottom = Vec3::new(0.0, -half_h - FRAME_THICKNESS / 2.0, -0.5);
-    let left = Vec3::new(-half_w - FRAME_THICKNESS / 2.0, 0.0, -0.5);
-    let right = Vec3::new(half_w + FRAME_THICKNESS / 2.0, 0.0, -0.5);
+    let origin3 = Vec3::new(origin.x, origin.y, 0.0);
+    let top = origin3 + Vec3::new(0.0, half_h + FRAME_THICKNESS / 2.0, -0.5);
+    let bottom = origin3 + Vec3::new(0.0, -half_h - FRAME_THICKNESS / 2.0, -0.5);
+    let left = origin3 + Vec3::new(-half_w - FRAME_THICKNESS / 2.0, 0.0, -0.5);
+    let right = origin3 + Vec3::new(half_w + FRAME_THICKNESS / 2.0, 0.0, -0.5);
 
     let horizontal_size = Vec2::new(grid_w + FRAME_THICKNESS * 2.0, FRAME_THICKNESS);
     let vertical_size = Vec2::new(FRAME_THICKNESS, grid_h);
@@ -724,7 +1000,7 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
         .set_parent(panel)
         .id();
 
-    let game_over = commands
+    let status = commands
         .spawn(TextBundle {
             text: Text::from_section(
                 "GAME OVER - Press Any Button",
@@ -748,36 +1024,79 @@ fn spawn_ui_texts(commands: &mut Commands, panel: Entity) -> UiTexts {
     UiTexts {
         score,
         timer,
-        game_over,
+        status,
     }
 }
 
 fn update_ui_text(
-    score: Res<Score>,
-    elapsed: Res<ElapsedTime>,
-    game_over: Res<GameOver>,
-    ui: Res<UiTexts>,
+    players: Res<Players>,
+    match_over: Res<MatchOver>,
+    views: Res<PlayerViews>,
+    mode: Res<GameMode>,
     mut text_query: Query<&mut Text>,
     mut vis_query: Query<&mut Visibility>,
 ) {
+    update_player_ui(
+        PlayerId::P1,
+        &players.p1,
+        &views.p1.ui,
+        &match_over,
+        &mut text_query,
+        &mut vis_query,
+    );
+    if *mode == GameMode::TwoPlayer {
+        if let Some(p2_view) = &views.p2 {
+            update_player_ui(
+                PlayerId::P2,
+                &players.p2,
+                &p2_view.ui,
+                &match_over,
+                &mut text_query,
+                &mut vis_query,
+            );
+        }
+    }
+}
+
+fn update_player_ui(
+    player_id: PlayerId,
+    player: &PlayerState,
+    ui: &UiTexts,
+    match_over: &MatchOver,
+    text_query: &mut Query<&mut Text>,
+    vis_query: &mut Query<&mut Visibility>,
+) {
     if let Ok(mut text) = text_query.get_mut(ui.score) {
-        text.sections[0].value = format!("Score: {}", score.0);
+        text.sections[0].value = format!("Score: {}", player.score);
     }
     if let Ok(mut text) = text_query.get_mut(ui.timer) {
-        text.sections[0].value = format!("Time: {:.1}s", elapsed.0);
+        text.sections[0].value = format!("Time: {:.1}s", player.elapsed);
     }
-    if let Ok(mut visibility) = vis_query.get_mut(ui.game_over) {
-        *visibility = if game_over.0 {
-            Visibility::Visible
+
+    if let Ok(mut visibility) = vis_query.get_mut(ui.status) {
+        if match_over.active {
+            *visibility = Visibility::Visible;
         } else {
-            Visibility::Hidden
-        };
+            *visibility = Visibility::Hidden;
+        }
+    }
+
+    if match_over.active {
+        if let Ok(mut text) = text_query.get_mut(ui.status) {
+            let winner = match_over.winner;
+            if winner == Some(player_id) {
+                text.sections[0].value = "YOU WIN - Press Any Button".to_string();
+            } else {
+                text.sections[0].value = "GAME OVER - Press Any Button".to_string();
+            }
+        }
     }
 }
 
 fn update_panel_layout(
     windows: Query<&Window, With<PrimaryWindow>>,
-    panel: Res<PanelEntity>,
+    views: Res<PlayerViews>,
+    mode: Res<GameMode>,
     mut style_query: Query<&mut Style>,
 ) {
     let window = match windows.get_single() {
@@ -787,20 +1106,55 @@ fn update_panel_layout(
 
     let grid_w = GRID_W as f32 * CELL_SIZE;
     let grid_h = GRID_H as f32 * CELL_SIZE;
-    let panel_w = PANEL_WIDTH;
     let panel_h = grid_h + FRAME_THICKNESS * 2.0;
-    let left = (window.width() / 2.0) + (grid_w / 2.0) + PANEL_GAP;
     let top = (window.height() - panel_h) / 2.0;
 
-    if let Ok(mut style) = style_query.get_mut(panel.0) {
+    position_panel(
+        &views.p1,
+        window.width(),
+        grid_w,
+        panel_h,
+        top,
+        &mut style_query,
+    );
+    if *mode == GameMode::TwoPlayer {
+        if let Some(p2_view) = &views.p2 {
+            position_panel(
+                p2_view,
+                window.width(),
+                grid_w,
+                panel_h,
+                top,
+                &mut style_query,
+            );
+        }
+    }
+}
+
+fn position_panel(
+    view: &PlayerView,
+    window_w: f32,
+    grid_w: f32,
+    panel_h: f32,
+    top: f32,
+    style_query: &mut Query<&mut Style>,
+) {
+    let left = match view.panel_side {
+        PanelSide::Right => window_w / 2.0 + view.origin.x + grid_w / 2.0 + PANEL_GAP,
+        PanelSide::Left => {
+            window_w / 2.0 + view.origin.x - grid_w / 2.0 - PANEL_GAP - PANEL_WIDTH
+        }
+    };
+
+    if let Ok(mut style) = style_query.get_mut(view.panel) {
         style.left = Val::Px(left);
         style.top = Val::Px(top.max(0.0));
-        style.width = Val::Px(panel_w);
+        style.width = Val::Px(PANEL_WIDTH);
         style.height = Val::Px(panel_h);
     }
 }
 
-fn spawn_cursor(commands: &mut Commands) -> Entity {
+fn spawn_cursor(commands: &mut Commands, origin: Vec2) -> Entity {
     commands
         .spawn(SpriteBundle {
             sprite: Sprite {
@@ -808,7 +1162,7 @@ fn spawn_cursor(commands: &mut Commands) -> Entity {
                 custom_size: Some(Vec2::new(CELL_SIZE * 2.0, CELL_SIZE)),
                 ..Default::default()
             },
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            transform: Transform::from_translation(Vec3::new(origin.x, origin.y, 1.0)),
             ..Default::default()
         })
         .insert(GameEntity)
@@ -816,17 +1170,40 @@ fn spawn_cursor(commands: &mut Commands) -> Entity {
 }
 
 fn update_visuals(
-    grid: Res<Grid>,
-    cursor: Res<Cursor>,
-    sprites: Res<BlockSprites>,
-    cursor_sprite: Res<CursorSprite>,
+    players: Res<Players>,
+    views: Res<PlayerViews>,
+    mode: Res<GameMode>,
     mut sprite_query: Query<&mut Sprite>,
     mut transform_query: Query<&mut Transform>,
 ) {
-    for y in 0..grid.height {
-        for x in 0..grid.width {
-            let idx = y * grid.width + x;
-            let color = match grid.get(x, y).map(|b| b.color) {
+    update_player_visuals(
+        &players.p1,
+        &views.p1,
+        &mut sprite_query,
+        &mut transform_query,
+    );
+    if *mode == GameMode::TwoPlayer {
+        if let Some(p2_view) = &views.p2 {
+            update_player_visuals(
+                &players.p2,
+                p2_view,
+                &mut sprite_query,
+                &mut transform_query,
+            );
+        }
+    }
+}
+
+fn update_player_visuals(
+    player: &PlayerState,
+    view: &PlayerView,
+    sprite_query: &mut Query<&mut Sprite>,
+    transform_query: &mut Query<&mut Transform>,
+) {
+    for y in 0..player.grid.height {
+        for x in 0..player.grid.width {
+            let idx = y * player.grid.width + x;
+            let color = match player.grid.get(x, y).map(|b| b.color) {
                 Some(BlockColor::Red) => Color::srgb(0.85, 0.2, 0.2),
                 Some(BlockColor::Green) => Color::srgb(0.2, 0.8, 0.3),
                 Some(BlockColor::Blue) => Color::srgb(0.2, 0.4, 0.9),
@@ -834,7 +1211,7 @@ fn update_visuals(
                 Some(BlockColor::Purple) => Color::srgb(0.6, 0.3, 0.9),
                 None => Color::srgba(0.0, 0.0, 0.0, 0.0),
             };
-            if let Some(entity) = sprites.entities.get(idx) {
+            if let Some(entity) = view.blocks.get(idx) {
                 if let Ok(mut sprite) = sprite_query.get_mut(*entity) {
                     sprite.color = color;
                 }
@@ -842,15 +1219,15 @@ fn update_visuals(
         }
     }
 
-    let pos = cursor_center(&grid, cursor.x, cursor.y);
-    if let Ok(mut transform) = transform_query.get_mut(cursor_sprite.0) {
+    let pos = cursor_center(&player.grid, player.cursor.x, player.cursor.y, view.origin);
+    if let Ok(mut transform) = transform_query.get_mut(view.cursor) {
         *transform = Transform::from_translation(pos);
     }
 }
 
-fn cell_center(grid: &Grid, x: usize, y: usize) -> Vec3 {
-    let origin_x = -((grid.width as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0;
-    let origin_y = -((grid.height as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0;
+fn cell_center(grid: &Grid, x: usize, y: usize, origin: Vec2) -> Vec3 {
+    let origin_x = -((grid.width as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0 + origin.x;
+    let origin_y = -((grid.height as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0 + origin.y;
     Vec3::new(
         origin_x + x as f32 * CELL_SIZE,
         origin_y + y as f32 * CELL_SIZE,
@@ -858,9 +1235,9 @@ fn cell_center(grid: &Grid, x: usize, y: usize) -> Vec3 {
     )
 }
 
-fn cursor_center(grid: &Grid, x: usize, y: usize) -> Vec3 {
-    let origin_x = -((grid.width as f32) * CELL_SIZE) / 2.0 + CELL_SIZE;
-    let origin_y = -((grid.height as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0;
+fn cursor_center(grid: &Grid, x: usize, y: usize, origin: Vec2) -> Vec3 {
+    let origin_x = -((grid.width as f32) * CELL_SIZE) / 2.0 + CELL_SIZE + origin.x;
+    let origin_y = -((grid.height as f32) * CELL_SIZE) / 2.0 + CELL_SIZE / 2.0 + origin.y;
     Vec3::new(
         origin_x + x as f32 * CELL_SIZE,
         origin_y + y as f32 * CELL_SIZE,
