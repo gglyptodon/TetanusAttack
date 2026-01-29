@@ -12,6 +12,13 @@ const FRAME_THICKNESS: f32 = 4.0;
 const PANEL_WIDTH: f32 = 140.0;
 const PANEL_GAP: f32 = 16.0;
 
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+enum AppState {
+    #[default]
+    Title,
+    Game,
+}
+
 #[derive(Resource)]
 struct BlockSprites {
     entities: Vec<Entity>,
@@ -54,6 +61,9 @@ struct UiTexts {
 #[derive(Resource)]
 struct PanelEntity(Entity);
 
+#[derive(Resource)]
+struct MenuRoot(Entity);
+
 #[derive(Resource, Default)]
 struct GameOver(bool);
 
@@ -65,6 +75,7 @@ struct GameOverTimer {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .init_state::<AppState>()
         .insert_resource(Grid::new(GRID_W, GRID_H))
         .insert_resource(Cursor::new(0, 0))
         .insert_resource(RiseTimer(Timer::from_seconds(2.5, TimerMode::Repeating)))
@@ -77,23 +88,139 @@ fn main() {
         .insert_resource(ElapsedTime::default())
         .insert_resource(GameOver::default())
         .insert_resource(GameOverTimer::default())
-        .add_systems(Startup, setup)
-        .add_systems(Update, handle_input)
-        .add_systems(Update, handle_restart)
-        .add_systems(Update, apply_gravity_system)
-        .add_systems(Update, update_time)
-        .add_systems(Update, update_game_over_timer)
-        .add_systems(Update, update_panel_layout)
-        .add_systems(Update, update_visuals)
-        .add_systems(Update, update_ui_text)
-        .add_systems(Update, rise_stack)
-        .add_systems(Update, update_rise_pause)
+        .add_systems(Startup, setup_camera)
+        .add_systems(OnEnter(AppState::Title), setup_menu)
+        .add_systems(OnExit(AppState::Title), cleanup_menu)
+        .add_systems(OnEnter(AppState::Game), setup_game)
+        .add_systems(Update, handle_menu_input.run_if(in_state(AppState::Title)))
+        .add_systems(Update, handle_input.run_if(in_state(AppState::Game)))
+        .add_systems(Update, handle_restart.run_if(in_state(AppState::Game)))
+        .add_systems(Update, apply_gravity_system.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_time.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_game_over_timer.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_panel_layout.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_visuals.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_ui_text.run_if(in_state(AppState::Game)))
+        .add_systems(Update, rise_stack.run_if(in_state(AppState::Game)))
+        .add_systems(Update, update_rise_pause.run_if(in_state(AppState::Game)))
         .run();
 }
 
-fn setup(mut commands: Commands, mut grid: ResMut<Grid>) {
+fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
+}
+
+fn setup_menu(mut commands: Commands) {
+    let root = commands
+        .spawn(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(16.0),
+                ..Default::default()
+            },
+            background_color: BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.9)),
+            ..Default::default()
+        })
+        .id();
+
+    commands.entity(root).with_children(|parent| {
+        parent.spawn(TextBundle {
+            text: Text::from_section(
+                "TETANUS ATTACK",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 42.0,
+                    color: Color::srgb(0.9, 0.9, 0.95),
+                },
+            ),
+            ..Default::default()
+        });
+
+        parent.spawn(TextBundle {
+            text: Text::from_section(
+                "1 PLAYER",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 28.0,
+                    color: Color::srgb(0.2, 0.9, 0.6),
+                },
+            ),
+            ..Default::default()
+        });
+
+        parent.spawn(TextBundle {
+            text: Text::from_section(
+                "Press Enter / Space / Start",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 18.0,
+                    color: Color::srgb(0.7, 0.7, 0.75),
+                },
+            ),
+            ..Default::default()
+        });
+    });
+
+    commands.insert_resource(MenuRoot(root));
+}
+
+fn cleanup_menu(mut commands: Commands, menu: Res<MenuRoot>) {
+    commands.entity(menu.0).despawn_recursive();
+}
+
+fn handle_menu_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
+    gamepads: Res<Gamepads>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    let keyboard = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space);
+    let mut gamepad = false;
+    for gamepad_id in gamepads.iter() {
+        gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
+        gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::South));
+    }
+    if keyboard || gamepad {
+        next_state.set(AppState::Game);
+    }
+}
+
+fn setup_game(
+    mut commands: Commands,
+    mut grid: ResMut<Grid>,
+    mut cursor: ResMut<Cursor>,
+    mut pending_clear: ResMut<PendingClear>,
+    mut clear_timer: ResMut<ClearDelayTimer>,
+    mut score: ResMut<Score>,
+    mut elapsed: ResMut<ElapsedTime>,
+    mut game_over: ResMut<GameOver>,
+    mut game_over_timer: ResMut<GameOverTimer>,
+    mut rise_timer: ResMut<RiseTimer>,
+    mut rise_pause_timer: ResMut<RisePauseTimer>,
+    mut rise_paused: ResMut<RisePaused>,
+    mut gravity_timer: ResMut<GravityTimer>,
+) {
+    grid.clear();
     grid.fill_test_pattern();
+    *cursor = Cursor::new(0, 0);
+    pending_clear.0 = false;
+    clear_timer.0.reset();
+    score.0 = 0;
+    elapsed.0 = 0.0;
+    game_over.0 = false;
+    game_over_timer.seconds = 0.0;
+    rise_timer.0.reset();
+    rise_pause_timer.0.reset();
+    rise_paused.0 = false;
+    gravity_timer.0.reset();
+
     let panel = spawn_frame_and_panel(&mut commands);
     spawn_background_grid(&mut commands, &grid);
     let sprites = spawn_grid(&mut commands, &grid);
