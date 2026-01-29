@@ -32,6 +32,12 @@ struct ClearDelayTimer(Timer);
 #[derive(Resource, Default)]
 struct PendingClear(bool);
 
+#[derive(Resource)]
+struct RisePauseTimer(Timer);
+
+#[derive(Resource, Default)]
+struct RisePaused(bool);
+
 #[derive(Resource, Default)]
 struct Score(u32);
 
@@ -62,6 +68,8 @@ fn main() {
         .insert_resource(Grid::new(GRID_W, GRID_H))
         .insert_resource(Cursor::new(0, 0))
         .insert_resource(RiseTimer(Timer::from_seconds(2.5, TimerMode::Repeating)))
+        .insert_resource(RisePauseTimer(Timer::from_seconds(0.6, TimerMode::Repeating)))
+        .insert_resource(RisePaused::default())
         .insert_resource(GravityTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
         .insert_resource(ClearDelayTimer(Timer::from_seconds(0.01, TimerMode::Repeating)))
         .insert_resource(PendingClear::default())
@@ -79,6 +87,7 @@ fn main() {
         .add_systems(Update, update_visuals)
         .add_systems(Update, update_ui_text)
         .add_systems(Update, rise_stack)
+        .add_systems(Update, update_rise_pause)
         .run();
 }
 
@@ -161,6 +170,8 @@ fn handle_restart(
     mut grid: ResMut<Grid>,
     mut cursor: ResMut<Cursor>,
     mut rise_timer: ResMut<RiseTimer>,
+    mut rise_pause_timer: ResMut<RisePauseTimer>,
+    mut rise_paused: ResMut<RisePaused>,
     mut gravity_timer: ResMut<GravityTimer>,
     mut clear_timer: ResMut<ClearDelayTimer>,
     mut pending_clear: ResMut<PendingClear>,
@@ -187,6 +198,8 @@ fn handle_restart(
         grid.fill_test_pattern();
         *cursor = Cursor::new(0, 0);
         rise_timer.0.reset();
+        rise_pause_timer.0.reset();
+        rise_paused.0 = false;
         gravity_timer.0.reset();
         clear_timer.0.reset();
         pending_clear.0 = false;
@@ -206,8 +219,12 @@ fn rise_stack(
     mut pending_clear: ResMut<PendingClear>,
     mut clear_timer: ResMut<ClearDelayTimer>,
     mut game_over_timer: ResMut<GameOverTimer>,
+    rise_paused: Res<RisePaused>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
+        if rise_paused.0 {
+            return;
+        }
         if grid.top_row_occupied() {
             game_over.0 = true;
             game_over_timer.seconds = 0.0;
@@ -245,6 +262,8 @@ fn apply_gravity_system(
     mut score: ResMut<Score>,
     mut pending_clear: ResMut<PendingClear>,
     mut clear_timer: ResMut<ClearDelayTimer>,
+    mut rise_paused: ResMut<RisePaused>,
+    mut rise_pause_timer: ResMut<RisePauseTimer>,
 ) {
     if game_over.0 {
         return;
@@ -254,7 +273,12 @@ fn apply_gravity_system(
         if !moved {
             if pending_clear.0 {
                 if clear_timer.0.tick(time.delta()).just_finished() {
-                    score.0 += grid.clear_matches_once();
+                    let cleared = grid.clear_matches_once();
+                    if cleared > 0 {
+                        rise_paused.0 = true;
+                        rise_pause_timer.0.reset();
+                        score.0 += cleared;
+                    }
                     pending_clear.0 = false;
                 }
             } else if grid.has_matches() {
@@ -264,6 +288,20 @@ fn apply_gravity_system(
         } else {
             pending_clear.0 = false;
         }
+    }
+}
+
+fn update_rise_pause(
+    time: Res<Time>,
+    mut rise_pause_timer: ResMut<RisePauseTimer>,
+    mut rise_paused: ResMut<RisePaused>,
+    game_over: Res<GameOver>,
+) {
+    if game_over.0 {
+        return;
+    }
+    if rise_paused.0 && rise_pause_timer.0.tick(time.delta()).just_finished() {
+        rise_paused.0 = false;
     }
 }
 
