@@ -17,6 +17,7 @@ enum AppState {
     #[default]
     Title,
     Game,
+    Pause,
 }
 
 #[derive(Resource)]
@@ -64,8 +65,14 @@ struct PanelEntity(Entity);
 #[derive(Resource)]
 struct MenuRoot(Entity);
 
+#[derive(Resource)]
+struct PauseRoot(Entity);
+
 #[derive(Component)]
 struct GameEntity;
+
+#[derive(Resource, Default)]
+struct GameInitialized(bool);
 
 #[derive(Resource, Default)]
 struct GameOver(bool);
@@ -91,13 +98,17 @@ fn main() {
         .insert_resource(ElapsedTime::default())
         .insert_resource(GameOver::default())
         .insert_resource(GameOverTimer::default())
+        .insert_resource(GameInitialized::default())
         .add_systems(Startup, setup_camera)
-        .add_systems(OnEnter(AppState::Title), setup_menu)
+        .add_systems(OnEnter(AppState::Title), (cleanup_game, setup_menu).chain())
         .add_systems(OnExit(AppState::Title), cleanup_menu)
         .add_systems(OnEnter(AppState::Game), setup_game)
-        .add_systems(OnExit(AppState::Game), cleanup_game)
+        .add_systems(OnEnter(AppState::Pause), setup_pause)
+        .add_systems(OnExit(AppState::Pause), cleanup_pause)
         .add_systems(Update, handle_menu_input.run_if(in_state(AppState::Title)))
+        .add_systems(Update, handle_pause_input.run_if(in_state(AppState::Pause)))
         .add_systems(Update, handle_input.run_if(in_state(AppState::Game)))
+        .add_systems(Update, handle_pause_request.run_if(in_state(AppState::Game)))
         .add_systems(Update, handle_restart.run_if(in_state(AppState::Game)))
         .add_systems(Update, handle_game_over_back.run_if(in_state(AppState::Game)))
         .add_systems(Update, apply_gravity_system.run_if(in_state(AppState::Game)))
@@ -180,10 +191,68 @@ fn cleanup_menu(mut commands: Commands, menu: Res<MenuRoot>) {
     commands.entity(menu.0).despawn_recursive();
 }
 
-fn cleanup_game(mut commands: Commands, entities: Query<Entity, With<GameEntity>>) {
+fn setup_pause(mut commands: Commands) {
+    let root = commands
+        .spawn(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                top: Val::Percent(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(12.0),
+                ..Default::default()
+            },
+            background_color: BackgroundColor(Color::srgba(0.02, 0.02, 0.03, 0.75)),
+            ..Default::default()
+        })
+        .id();
+
+    commands.entity(root).with_children(|parent| {
+        parent.spawn(TextBundle {
+            text: Text::from_section(
+                "PAUSED",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 36.0,
+                    color: Color::srgb(0.9, 0.9, 0.95),
+                },
+            ),
+            ..Default::default()
+        });
+
+        parent.spawn(TextBundle {
+            text: Text::from_section(
+                "Press Esc / Start\nto Resume",
+                TextStyle {
+                    font: Default::default(),
+                    font_size: 18.0,
+                    color: Color::srgb(0.7, 0.7, 0.75),
+                },
+            ).with_justify(JustifyText::Center),
+            ..Default::default()
+        });
+    });
+
+    commands.insert_resource(PauseRoot(root));
+}
+
+fn cleanup_pause(mut commands: Commands, pause: Res<PauseRoot>) {
+    commands.entity(pause.0).despawn_recursive();
+}
+
+fn cleanup_game(
+    mut commands: Commands,
+    entities: Query<Entity, With<GameEntity>>,
+    mut initialized: ResMut<GameInitialized>,
+) {
     for entity in &entities {
         commands.entity(entity).despawn_recursive();
     }
+    initialized.0 = false;
 }
 
 fn handle_menu_input(
@@ -203,6 +272,42 @@ fn handle_menu_input(
     }
 }
 
+fn handle_pause_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
+    gamepads: Res<Gamepads>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    let keyboard = keys.just_pressed(KeyCode::Escape);
+    let mut gamepad = false;
+    for gamepad_id in gamepads.iter() {
+        gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
+    }
+    if keyboard || gamepad {
+        next_state.set(AppState::Game);
+    }
+}
+
+fn handle_pause_request(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
+    gamepads: Res<Gamepads>,
+    game_over: Res<GameOver>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if game_over.0 {
+        return;
+    }
+    let keyboard = keys.just_pressed(KeyCode::Escape);
+    let mut gamepad = false;
+    for gamepad_id in gamepads.iter() {
+        gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
+    }
+    if keyboard || gamepad {
+        next_state.set(AppState::Pause);
+    }
+}
+
 fn setup_game(
     mut commands: Commands,
     mut grid: ResMut<Grid>,
@@ -217,7 +322,11 @@ fn setup_game(
     mut rise_pause_timer: ResMut<RisePauseTimer>,
     mut rise_paused: ResMut<RisePaused>,
     mut gravity_timer: ResMut<GravityTimer>,
+    mut initialized: ResMut<GameInitialized>,
 ) {
+    if initialized.0 {
+        return;
+    }
     grid.clear();
     grid.fill_test_pattern();
     *cursor = Cursor::new(0, 0);
@@ -241,6 +350,7 @@ fn setup_game(
     commands.insert_resource(CursorSprite(cursor_sprite));
     commands.insert_resource(ui_texts);
     commands.insert_resource(PanelEntity(panel));
+    initialized.0 = true;
 }
 
 fn handle_input(
