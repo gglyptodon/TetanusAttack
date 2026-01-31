@@ -406,7 +406,9 @@ fn handle_pause_input(
     gamepads: Res<Gamepads>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let keyboard = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Tab);
+    let keyboard = keys.just_pressed(KeyCode::Escape)
+        || keys.just_pressed(KeyCode::Tab)
+        || keys.just_pressed(KeyCode::Backspace);
     let mut gamepad = false;
     for gamepad_id in gamepads.iter() {
         gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
@@ -426,7 +428,9 @@ fn handle_pause_request(
     if match_over.active {
         return;
     }
-    let keyboard = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Tab);
+    let keyboard = keys.just_pressed(KeyCode::Escape)
+        || keys.just_pressed(KeyCode::Tab)
+        || keys.just_pressed(KeyCode::Backspace);
     let mut gamepad = false;
     for gamepad_id in gamepads.iter() {
         gamepad |= buttons.just_pressed(GamepadButton::new(gamepad_id, GamepadButtonType::Start));
@@ -646,7 +650,7 @@ fn handle_restart(
         return;
     }
     let keyboard_restart = keys.get_just_pressed().any(|k| {
-        *k != KeyCode::Escape && *k != KeyCode::Tab
+        *k != KeyCode::Escape && *k != KeyCode::Tab && *k != KeyCode::Backspace
     });
     let gamepad_restart = buttons
         .get_just_pressed()
@@ -676,7 +680,7 @@ fn handle_game_over_back(
     if !match_over.active || match_over_timer.seconds < 1.0 {
         return;
     }
-    let escape = keys.just_pressed(KeyCode::Escape);
+    let escape = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace);
     let mut gamepad = false;
     for button in buttons.get_just_pressed() {
         if matches!(
