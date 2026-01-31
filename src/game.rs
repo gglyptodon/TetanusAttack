@@ -104,18 +104,18 @@ impl Grid {
     }
 
     pub fn fill_test_pattern(&mut self) {
-        let colors = [
-            BlockColor::Red,
-            BlockColor::Green,
-            BlockColor::Blue,
-            BlockColor::Yellow,
-            BlockColor::Purple,
-        ];
         let filled_rows = self.height / 2;
+        let mut rng = thread_rng();
         for y in 0..filled_rows {
             for x in 0..self.width {
-                let c = colors[(x + y) % colors.len()];
-                self.set(x, y, Some(Block { color: c }));
+                let mut color = random_color(&mut rng);
+                for _ in 0..10 {
+                    if !self.would_create_match(x, y, color) {
+                        break;
+                    }
+                    color = random_color(&mut rng);
+                }
+                self.set(x, y, Some(Block { color }));
             }
         }
     }
