@@ -9,6 +9,7 @@ const GRID_W: usize = 6;
 const GRID_H: usize = 12;
 const CELL_SIZE: f32 = 32.0;
 const FRAME_THICKNESS: f32 = 4.0;
+const CURSOR_BORDER_THICKNESS: f32 = 2.0;
 const PANEL_WIDTH: f32 = 140.0;
 const PANEL_GAP: f32 = 16.0;
 const PLAYER_GAP: f32 = 80.0;
@@ -1159,18 +1160,47 @@ fn position_panel(
 }
 
 fn spawn_cursor(commands: &mut Commands, origin: Vec2) -> Entity {
-    commands
-        .spawn(SpriteBundle {
-            sprite: Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 0.2),
-                custom_size: Some(Vec2::new(CELL_SIZE * 2.0, CELL_SIZE)),
-                ..Default::default()
-            },
+    let width = CELL_SIZE * 2.0;
+    let height = CELL_SIZE;
+    let thickness = CURSOR_BORDER_THICKNESS;
+    let color = Color::srgb(1.0, 1.0, 1.0);
+
+    let cursor = commands
+        .spawn(SpatialBundle {
             transform: Transform::from_translation(Vec3::new(origin.x, origin.y, 1.0)),
             ..Default::default()
         })
         .insert(GameEntity)
-        .id()
+        .id();
+
+    commands.entity(cursor).with_children(|parent| {
+        let horizontal = Vec2::new(width, thickness);
+        let vertical = Vec2::new(thickness, height);
+
+        let top_y = height / 2.0 - thickness / 2.0;
+        let bottom_y = -height / 2.0 + thickness / 2.0;
+        let left_x = -width / 2.0 + thickness / 2.0;
+        let right_x = width / 2.0 - thickness / 2.0;
+
+        for (pos, size) in [
+            (Vec3::new(0.0, top_y, 0.0), horizontal),
+            (Vec3::new(0.0, bottom_y, 0.0), horizontal),
+            (Vec3::new(left_x, 0.0, 0.0), vertical),
+            (Vec3::new(right_x, 0.0, 0.0), vertical),
+        ] {
+            parent.spawn(SpriteBundle {
+                sprite: Sprite {
+                    color,
+                    custom_size: Some(size),
+                    ..Default::default()
+                },
+                transform: Transform::from_translation(pos),
+                ..Default::default()
+            });
+        }
+    });
+
+    cursor
 }
 
 fn update_visuals(
