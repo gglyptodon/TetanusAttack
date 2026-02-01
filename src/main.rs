@@ -17,6 +17,8 @@ const RISE_SECONDS: f32 = 2.5;
 const GRAVITY_STEP_SECONDS: f32 = 0.1;
 const CLEAR_DELAY_SECONDS: f32 = 0.1;
 const RISE_PAUSE_SECONDS: f32 = 0.6;
+const INPUT_REPEAT_DELAY: f32 = 0.25;
+const INPUT_REPEAT_INTERVAL: f32 = 0.08;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 enum AppState {
@@ -73,6 +75,9 @@ struct PlayerState {
     rise_timer: Timer,
     rise_pause_timer: Timer,
     rise_paused: bool,
+    repeat_dir: Option<IVec2>,
+    repeat_timer: Timer,
+    repeat_initial: bool,
 }
 
 impl PlayerState {
@@ -89,6 +94,9 @@ impl PlayerState {
             rise_timer: Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating),
             rise_pause_timer: Timer::from_seconds(RISE_PAUSE_SECONDS, TimerMode::Repeating),
             rise_paused: false,
+            repeat_dir: None,
+            repeat_timer: Timer::from_seconds(INPUT_REPEAT_DELAY, TimerMode::Once),
+            repeat_initial: true,
         }
     }
 }
@@ -543,6 +551,7 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<GamepadButton>>,
     gamepads: Res<Gamepads>,
+    time: Res<Time>,
     mut players: ResMut<Players>,
     mode: Res<GameMode>,
     match_over: Res<MatchOver>,
@@ -550,76 +559,51 @@ fn handle_input(
     if match_over.active {
         return;
     }
+    let delta = time.delta();
+    let gamepad_ids: Vec<_> = gamepads.iter().collect();
+    let p1_gamepad = gamepad_ids.first().copied();
+    let p2_gamepad = if *mode == GameMode::TwoPlayer {
+        gamepad_ids.get(1).copied()
+    } else {
+        None
+    };
+
     handle_keyboard_p1(keys.as_ref(), &mut players.p1);
     if *mode == GameMode::TwoPlayer {
         handle_keyboard_p2(keys.as_ref(), &mut players.p2);
     }
 
-    let gamepad_ids: Vec<_> = gamepads.iter().collect();
-    if let Some(gamepad) = gamepad_ids.get(0) {
-        handle_gamepad(*gamepad, buttons.as_ref(), &mut players.p1);
-    }
+    handle_gamepad(p1_gamepad, buttons.as_ref(), &mut players.p1);
     if *mode == GameMode::TwoPlayer {
-        if let Some(gamepad) = gamepad_ids.get(1) {
-            handle_gamepad(*gamepad, buttons.as_ref(), &mut players.p2);
-        }
+        handle_gamepad(p2_gamepad, buttons.as_ref(), &mut players.p2);
+    }
+
+    handle_repeat_p1(keys.as_ref(), buttons.as_ref(), p1_gamepad, &mut players.p1, delta);
+    if *mode == GameMode::TwoPlayer {
+        handle_repeat_p2(keys.as_ref(), buttons.as_ref(), p2_gamepad, &mut players.p2, delta);
     }
 }
 
 fn handle_keyboard_p1(keys: &ButtonInput<KeyCode>, player: &mut PlayerState) {
-    if keys.just_pressed(KeyCode::ArrowLeft) {
-        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::ArrowRight) {
-        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::ArrowUp) {
-        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::ArrowDown) {
-        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
-    }
     if keys.just_pressed(KeyCode::Space) {
         try_swap(player);
     }
 }
 
 fn handle_keyboard_p2(keys: &ButtonInput<KeyCode>, player: &mut PlayerState) {
-    if keys.just_pressed(KeyCode::KeyA) {
-        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::KeyD) {
-        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::KeyW) {
-        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
-    }
-    if keys.just_pressed(KeyCode::KeyS) {
-        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
-    }
     if keys.just_pressed(KeyCode::ShiftLeft) {
         try_swap(player);
     }
 }
 
 fn handle_gamepad(
-    gamepad: Gamepad,
+    gamepad: Option<Gamepad>,
     buttons: &ButtonInput<GamepadButton>,
     player: &mut PlayerState,
 ) {
-    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadLeft)) {
-        player.cursor.move_by(-1, 0, player.grid.width, player.grid.height);
-    }
-    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadRight)) {
-        player.cursor.move_by(1, 0, player.grid.width, player.grid.height);
-    }
-    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadUp)) {
-        player.cursor.move_by(0, 1, player.grid.width, player.grid.height);
-    }
-    if buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::DPadDown)) {
-        player.cursor.move_by(0, -1, player.grid.width, player.grid.height);
-    }
-
+    let Some(gamepad) = gamepad else {
+        return;
+    };
     let swap = buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::South))
         || buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::East))
         || buttons.just_pressed(GamepadButton::new(gamepad, GamepadButtonType::West))
@@ -627,6 +611,174 @@ fn handle_gamepad(
     if swap {
         try_swap(player);
     }
+}
+
+fn handle_repeat_p1(
+    keys: &ButtonInput<KeyCode>,
+    buttons: &ButtonInput<GamepadButton>,
+    gamepad: Option<Gamepad>,
+    player: &mut PlayerState,
+    delta: std::time::Duration,
+) {
+    let (left_jp, left_p) = dir_state_p1(keys, buttons, gamepad, Direction::Left);
+    let (right_jp, right_p) = dir_state_p1(keys, buttons, gamepad, Direction::Right);
+    let (up_jp, up_p) = dir_state_p1(keys, buttons, gamepad, Direction::Up);
+    let (down_jp, down_p) = dir_state_p1(keys, buttons, gamepad, Direction::Down);
+
+    let dir = select_direction(
+        player.repeat_dir,
+        &[
+            (left_jp, IVec2::new(-1, 0)),
+            (right_jp, IVec2::new(1, 0)),
+            (up_jp, IVec2::new(0, 1)),
+            (down_jp, IVec2::new(0, -1)),
+        ],
+        &[
+            (left_p, IVec2::new(-1, 0)),
+            (right_p, IVec2::new(1, 0)),
+            (up_p, IVec2::new(0, 1)),
+            (down_p, IVec2::new(0, -1)),
+        ],
+    );
+    update_repeat_move(player, dir, delta);
+}
+
+fn handle_repeat_p2(
+    keys: &ButtonInput<KeyCode>,
+    buttons: &ButtonInput<GamepadButton>,
+    gamepad: Option<Gamepad>,
+    player: &mut PlayerState,
+    delta: std::time::Duration,
+) {
+    let (left_jp, left_p) = dir_state_p2(keys, buttons, gamepad, Direction::Left);
+    let (right_jp, right_p) = dir_state_p2(keys, buttons, gamepad, Direction::Right);
+    let (up_jp, up_p) = dir_state_p2(keys, buttons, gamepad, Direction::Up);
+    let (down_jp, down_p) = dir_state_p2(keys, buttons, gamepad, Direction::Down);
+
+    let dir = select_direction(
+        player.repeat_dir,
+        &[
+            (left_jp, IVec2::new(-1, 0)),
+            (right_jp, IVec2::new(1, 0)),
+            (up_jp, IVec2::new(0, 1)),
+            (down_jp, IVec2::new(0, -1)),
+        ],
+        &[
+            (left_p, IVec2::new(-1, 0)),
+            (right_p, IVec2::new(1, 0)),
+            (up_p, IVec2::new(0, 1)),
+            (down_p, IVec2::new(0, -1)),
+        ],
+    );
+    update_repeat_move(player, dir, delta);
+}
+
+#[derive(Clone, Copy)]
+enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+fn dir_state_p1(
+    keys: &ButtonInput<KeyCode>,
+    buttons: &ButtonInput<GamepadButton>,
+    gamepad: Option<Gamepad>,
+    dir: Direction,
+) -> (bool, bool) {
+    let (key, button) = match dir {
+        Direction::Left => (KeyCode::ArrowLeft, GamepadButtonType::DPadLeft),
+        Direction::Right => (KeyCode::ArrowRight, GamepadButtonType::DPadRight),
+        Direction::Up => (KeyCode::ArrowUp, GamepadButtonType::DPadUp),
+        Direction::Down => (KeyCode::ArrowDown, GamepadButtonType::DPadDown),
+    };
+    let gp_pressed = gamepad.map_or(false, |pad| {
+        buttons.pressed(GamepadButton::new(pad, button))
+    });
+    let gp_just = gamepad.map_or(false, |pad| {
+        buttons.just_pressed(GamepadButton::new(pad, button))
+    });
+    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+}
+
+fn dir_state_p2(
+    keys: &ButtonInput<KeyCode>,
+    buttons: &ButtonInput<GamepadButton>,
+    gamepad: Option<Gamepad>,
+    dir: Direction,
+) -> (bool, bool) {
+    let (key, button) = match dir {
+        Direction::Left => (KeyCode::KeyA, GamepadButtonType::DPadLeft),
+        Direction::Right => (KeyCode::KeyD, GamepadButtonType::DPadRight),
+        Direction::Up => (KeyCode::KeyW, GamepadButtonType::DPadUp),
+        Direction::Down => (KeyCode::KeyS, GamepadButtonType::DPadDown),
+    };
+    let gp_pressed = gamepad.map_or(false, |pad| {
+        buttons.pressed(GamepadButton::new(pad, button))
+    });
+    let gp_just = gamepad.map_or(false, |pad| {
+        buttons.just_pressed(GamepadButton::new(pad, button))
+    });
+    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+}
+
+fn select_direction(
+    current: Option<IVec2>,
+    just_pressed: &[(bool, IVec2)],
+    pressed: &[(bool, IVec2)],
+) -> Option<IVec2> {
+    for (is_just, dir) in just_pressed {
+        if *is_just {
+            return Some(*dir);
+        }
+    }
+    if let Some(dir) = current {
+        if pressed.iter().any(|(is_pressed, d)| *is_pressed && *d == dir) {
+            return Some(dir);
+        }
+    }
+    for (is_pressed, dir) in pressed {
+        if *is_pressed {
+            return Some(*dir);
+        }
+    }
+    None
+}
+
+fn update_repeat_move(
+    player: &mut PlayerState,
+    dir: Option<IVec2>,
+    delta: std::time::Duration,
+) {
+    if let Some(dir) = dir {
+        let dir_changed = player.repeat_dir != Some(dir);
+        if dir_changed {
+            player.repeat_dir = Some(dir);
+            player.repeat_initial = true;
+            player.repeat_timer = Timer::from_seconds(INPUT_REPEAT_DELAY, TimerMode::Once);
+            move_cursor(player, dir);
+            return;
+        }
+        if player.repeat_timer.tick(delta).just_finished() {
+            move_cursor(player, dir);
+            if player.repeat_initial {
+                player.repeat_initial = false;
+                player.repeat_timer =
+                    Timer::from_seconds(INPUT_REPEAT_INTERVAL, TimerMode::Repeating);
+            }
+        }
+    } else {
+        player.repeat_dir = None;
+        player.repeat_initial = true;
+        player.repeat_timer.reset();
+    }
+}
+
+fn move_cursor(player: &mut PlayerState, dir: IVec2) {
+    player
+        .cursor
+        .move_by(dir.x as isize, dir.y as isize, player.grid.width, player.grid.height);
 }
 
 fn try_swap(player: &mut PlayerState) {
