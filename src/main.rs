@@ -14,6 +14,9 @@ const PANEL_WIDTH: f32 = 140.0;
 const PANEL_GAP: f32 = 16.0;
 const PLAYER_GAP: f32 = 80.0;
 const RISE_SECONDS: f32 = 2.5;
+const RISE_SPEEDUP_INTERVAL: f32 = 30.0;
+const RISE_SPEEDUP_FACTOR: f32 = 0.89;
+const RISE_MIN_SECONDS: f32 = 0.8;
 const GRAVITY_STEP_SECONDS: f32 = 0.1;
 const CLEAR_DELAY_SECONDS: f32 = 0.1;
 const RISE_PAUSE_SECONDS: f32 = 0.6;
@@ -75,6 +78,7 @@ struct PlayerState {
     rise_timer: Timer,
     rise_pause_timer: Timer,
     rise_paused: bool,
+    rise_level: u32,
     repeat_dir: Option<IVec2>,
     repeat_timer: Timer,
     repeat_initial: bool,
@@ -94,6 +98,7 @@ impl PlayerState {
             rise_timer: Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating),
             rise_pause_timer: Timer::from_seconds(RISE_PAUSE_SECONDS, TimerMode::Repeating),
             rise_paused: false,
+            rise_level: 0,
             repeat_dir: None,
             repeat_timer: Timer::from_seconds(INPUT_REPEAT_DELAY, TimerMode::Once),
             repeat_initial: true,
@@ -503,6 +508,8 @@ fn reset_player(player: &mut PlayerState) {
     player.rise_timer.reset();
     player.rise_pause_timer.reset();
     player.rise_paused = false;
+    player.rise_level = 0;
+    player.rise_timer = Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating);
 }
 
 fn compute_player_origins(mode: GameMode) -> (Vec2, Vec2) {
@@ -913,9 +920,24 @@ fn update_time(
     }
     let delta = time.delta_seconds();
     players.p1.elapsed += delta;
+    update_rise_speed(&mut players.p1);
     if *mode == GameMode::TwoPlayer {
         players.p2.elapsed += delta;
+        update_rise_speed(&mut players.p2);
     }
+}
+
+fn update_rise_speed(player: &mut PlayerState) {
+    let level = (player.elapsed / RISE_SPEEDUP_INTERVAL).floor() as u32;
+    if level <= player.rise_level {
+        return;
+    }
+    player.rise_level = level;
+    let mut seconds = RISE_SECONDS * RISE_SPEEDUP_FACTOR.powi(level as i32);
+    if seconds < RISE_MIN_SECONDS {
+        seconds = RISE_MIN_SECONDS;
+    }
+    player.rise_timer = Timer::from_seconds(seconds, TimerMode::Repeating);
 }
 
 fn update_game_over_timer(
