@@ -1,9 +1,10 @@
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use rand::prelude::*;
 
 mod game;
-use game::{BlockColor, Cursor, Grid, SwapCmd};
+use game::{Block, BlockColor, Cursor, Grid, SwapCmd};
 
 const GRID_W: usize = 6;
 const GRID_H: usize = 12;
@@ -23,6 +24,8 @@ const CLEAR_DELAY_SECONDS: f32 = 0.1;
 const RISE_PAUSE_SECONDS: f32 = 0.6;
 const INPUT_REPEAT_DELAY: f32 = 0.25;
 const INPUT_REPEAT_INTERVAL: f32 = 0.08;
+const GARBAGE_CHAIN_BONUS: u32 = 2;
+const GARBAGE_CHAIN_CAP: u32 = 24;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 enum AppState {
@@ -83,6 +86,11 @@ struct PlayerState {
     repeat_dir: Option<IVec2>,
     repeat_timer: Timer,
     repeat_initial: bool,
+    chain_active: bool,
+    chain_index: u32,
+    chain_ended: bool,
+    garbage_outgoing: u32,
+    garbage_incoming: u32,
 }
 
 impl PlayerState {
@@ -103,6 +111,11 @@ impl PlayerState {
             repeat_dir: None,
             repeat_timer: Timer::from_seconds(INPUT_REPEAT_DELAY, TimerMode::Once),
             repeat_initial: true,
+            chain_active: false,
+            chain_index: 0,
+            chain_ended: false,
+            garbage_outgoing: 0,
+            garbage_incoming: 0,
         }
     }
 }
@@ -185,6 +198,12 @@ fn main() {
         .add_systems(Update, update_ui_text.run_if(in_state(AppState::Game)))
         .add_systems(Update, rise_stack.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_clear_delay.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            resolve_garbage
+                .run_if(in_state(AppState::Game))
+                .after(update_clear_delay),
+        )
         .add_systems(Update, update_rise_pause.run_if(in_state(AppState::Game)))
         .run();
 }
@@ -511,6 +530,11 @@ fn reset_player(player: &mut PlayerState) {
     player.rise_paused = false;
     player.rise_level = 0;
     player.rise_timer = Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating);
+    player.chain_active = false;
+    player.chain_index = 0;
+    player.chain_ended = false;
+    player.garbage_outgoing = 0;
+    player.garbage_incoming = 0;
 }
 
 fn compute_player_origins(mode: GameMode) -> (Vec2, Vec2) {
@@ -971,9 +995,20 @@ fn process_player_gravity(delta: std::time::Duration, player: &mut PlayerState) 
         let moved = player.grid.apply_gravity_step();
         if !moved {
             player.settled = true;
-            if !player.pending_clear && player.grid.has_matches() {
+            let has_matches = player.grid.has_matches();
+            if !player.pending_clear && has_matches {
                 player.pending_clear = true;
                 player.clear_timer.reset();
+            }
+            if player.chain_active && !player.pending_clear && !has_matches {
+                player.chain_active = false;
+                player.chain_index = 0;
+                player.chain_ended = true;
+                let converted = player.grid.convert_cracked_garbage();
+                if converted > 0 && player.grid.has_matches() {
+                    player.pending_clear = true;
+                    player.clear_timer.reset();
+                }
             }
         } else {
             player.settled = false;
@@ -1003,14 +1038,146 @@ fn process_clear_delay(delta: std::time::Duration, player: &mut PlayerState) {
         return;
     }
     if player.clear_timer.tick(delta).just_finished() {
-        let cleared = player.grid.clear_matches_once();
-        if cleared > 0 {
+        let stats = player.grid.clear_matches_once_with_stats();
+        if stats.cleared > 0 {
             player.rise_paused = true;
             player.rise_pause_timer.reset();
-            player.score += cleared;
+            player.score += stats.cleared;
+            player.grid.crack_adjacent_garbage(&stats.marks);
+            if !player.chain_active {
+                player.chain_active = true;
+                player.chain_index = 1;
+            } else {
+                player.chain_index += 1;
+            }
+            add_garbage_for_clear(player, stats.cleared, stats.groups);
         }
         player.pending_clear = false;
     }
+}
+
+fn add_garbage_for_clear(player: &mut PlayerState, cleared: u32, groups: u32) {
+    let combo_units = cleared.saturating_sub(3);
+    let multi_units = groups.saturating_sub(1);
+    let chain_units = if player.chain_index > 1 {
+        GARBAGE_CHAIN_BONUS * (player.chain_index - 1)
+    } else {
+        0
+    };
+    let total = combo_units + multi_units + chain_units;
+    if cleared < 4 && player.chain_index < 2 {
+        return;
+    }
+    if total == 0 {
+        return;
+    }
+    let remaining = GARBAGE_CHAIN_CAP.saturating_sub(player.garbage_outgoing);
+    if remaining == 0 {
+        return;
+    }
+    player.garbage_outgoing += total.min(remaining);
+}
+
+fn resolve_garbage(
+    mut players: ResMut<Players>,
+    mut match_over: ResMut<MatchOver>,
+    mut match_over_timer: ResMut<MatchOverTimer>,
+    mode: Res<GameMode>,
+) {
+    if match_over.active || *mode != GameMode::TwoPlayer {
+        return;
+    }
+
+    if players.p1.chain_ended {
+        if players.p1.garbage_outgoing > 0 {
+            players.p2.garbage_incoming =
+                players.p2.garbage_incoming.saturating_add(players.p1.garbage_outgoing);
+            players.p1.garbage_outgoing = 0;
+        }
+        players.p1.chain_ended = false;
+    }
+    if players.p2.chain_ended {
+        if players.p2.garbage_outgoing > 0 {
+            players.p1.garbage_incoming =
+                players.p1.garbage_incoming.saturating_add(players.p2.garbage_outgoing);
+            players.p2.garbage_outgoing = 0;
+        }
+        players.p2.chain_ended = false;
+    }
+
+    let cancel = players.p1.garbage_incoming.min(players.p2.garbage_incoming);
+    if cancel > 0 {
+        players.p1.garbage_incoming -= cancel;
+        players.p2.garbage_incoming -= cancel;
+    }
+
+    apply_incoming_garbage(
+        &mut players.p1,
+        PlayerId::P1,
+        PlayerId::P2,
+        &mut match_over,
+        &mut match_over_timer,
+    );
+    if match_over.active {
+        return;
+    }
+    apply_incoming_garbage(
+        &mut players.p2,
+        PlayerId::P2,
+        PlayerId::P1,
+        &mut match_over,
+        &mut match_over_timer,
+    );
+}
+
+fn apply_incoming_garbage(
+    player: &mut PlayerState,
+    _player_id: PlayerId,
+    opponent_id: PlayerId,
+    match_over: &mut MatchOver,
+    match_over_timer: &mut MatchOverTimer,
+) {
+    if player.garbage_incoming == 0 {
+        return;
+    }
+    if player.pending_clear || !player.settled || player.rise_paused {
+        return;
+    }
+    let width = player.grid.width as u32;
+    let mut units = player.garbage_incoming;
+    player.garbage_incoming = 0;
+    let mut rng = thread_rng();
+
+    while units > 0 {
+        if player.grid.top_row_occupied() {
+            match_over.active = true;
+            match_over.winner = Some(opponent_id);
+            match_over_timer.seconds = 0.0;
+            return;
+        }
+        let row_units = units.min(width) as usize;
+        let mask = build_garbage_mask(&player.grid, row_units, &mut rng);
+        player.grid.push_garbage_row(&mask);
+        units -= row_units as u32;
+    }
+    player.settled = false;
+}
+
+fn build_garbage_mask(grid: &Grid, garbage_blocks: usize, rng: &mut ThreadRng) -> Vec<bool> {
+    let width = grid.width;
+    let mut mask = vec![false; width];
+    if garbage_blocks >= width {
+        mask.fill(true);
+        return mask;
+    }
+
+    let max_start = width - garbage_blocks;
+    let start = rng.gen_range(0..=max_start);
+    for x in start..start + garbage_blocks {
+        mask[x] = true;
+    }
+
+    mask
 }
 
 fn update_rise_pause(
@@ -1412,12 +1579,16 @@ fn update_player_visuals(
     for y in 0..player.grid.height {
         for x in 0..player.grid.width {
             let idx = y * player.grid.width + x;
-            let color = match player.grid.get(x, y).map(|b| b.color) {
-                Some(BlockColor::Red) => Color::srgb(0.9, 0.36, 0.5),
-                Some(BlockColor::Green) => Color::srgb(0.18, 0.78, 0.5),
-                Some(BlockColor::Blue) => Color::srgb(0.36, 0.52, 0.96),
-                Some(BlockColor::Yellow) => Color::srgb(0.95, 0.76, 0.28),
-                Some(BlockColor::Purple) => Color::srgb(0.62, 0.4, 0.9),
+            let color = match player.grid.get(x, y) {
+                Some(Block::Normal { color }) => match color {
+                    BlockColor::Red => Color::srgb(0.9, 0.36, 0.5),
+                    BlockColor::Green => Color::srgb(0.18, 0.78, 0.5),
+                    BlockColor::Blue => Color::srgb(0.36, 0.52, 0.96),
+                    BlockColor::Yellow => Color::srgb(0.95, 0.76, 0.28),
+                    BlockColor::Purple => Color::srgb(0.62, 0.4, 0.9),
+                },
+                Some(Block::Garbage { cracked: true }) => Color::srgb(0.58, 0.6, 0.62),
+                Some(Block::Garbage { cracked: false }) => Color::srgb(0.36, 0.38, 0.4),
                 None => Color::srgba(0.0, 0.0, 0.0, 0.0),
             };
             if let Some(entity) = view.blocks.get(idx) {

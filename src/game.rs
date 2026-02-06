@@ -11,8 +11,22 @@ pub enum BlockColor {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Block {
-    pub color: BlockColor,
+pub enum Block {
+    Normal { color: BlockColor },
+    Garbage { cracked: bool },
+}
+
+impl Block {
+    pub fn color(self) -> Option<BlockColor> {
+        match self {
+            Block::Normal { color } => Some(color),
+            Block::Garbage { .. } => None,
+        }
+    }
+
+    pub fn is_garbage(self) -> bool {
+        matches!(self, Block::Garbage { .. })
+    }
 }
 
 #[derive(Resource, Clone, Copy, Debug)]
@@ -99,6 +113,11 @@ impl Grid {
         {
             return false;
         }
+        if self.get(cmd.ax, cmd.ay).map(|b| b.is_garbage()).unwrap_or(false)
+            || self.get(cmd.bx, cmd.by).map(|b| b.is_garbage()).unwrap_or(false)
+        {
+            return false;
+        }
         self.swap(cmd.ax, cmd.ay, cmd.bx, cmd.by);
         true
     }
@@ -115,7 +134,7 @@ impl Grid {
                     }
                     color = random_color(&mut rng);
                 }
-                self.set(x, y, Some(Block { color }));
+                self.set(x, y, Some(Block::Normal { color }));
             }
         }
     }
@@ -125,11 +144,25 @@ impl Grid {
     }
 
     pub fn clear_matches_once(&mut self) -> u32 {
+        self.clear_matches_once_with_stats().cleared
+    }
+
+    pub fn clear_matches_once_with_stats(&mut self) -> ClearStats {
         let marks = self.find_matches();
         if marks.iter().all(|m| !*m) {
-            return 0;
+            return ClearStats {
+                cleared: 0,
+                groups: 0,
+                marks,
+            };
         }
-        self.clear_matches(&marks)
+        let groups = self.count_match_groups(&marks);
+        let cleared = self.clear_matches(&marks);
+        ClearStats {
+            cleared,
+            groups,
+            marks,
+        }
     }
 
     pub fn has_matches(&self) -> bool {
@@ -138,20 +171,7 @@ impl Grid {
     }
 
     pub fn apply_gravity(&mut self) {
-        for x in 0..self.width {
-            let mut write_y = 0;
-            for y in 0..self.height {
-                let idx = self.idx(x, y);
-                if let Some(block) = self.cells[idx] {
-                    if y != write_y {
-                        let write_idx = self.idx(x, write_y);
-                        self.cells[write_idx] = Some(block);
-                        self.cells[idx] = None;
-                    }
-                    write_y += 1;
-                }
-            }
-        }
+        while self.apply_gravity_step() {}
     }
 
     pub fn apply_gravity_step(&mut self) -> bool {
@@ -159,15 +179,85 @@ impl Grid {
         if self.height < 2 {
             return false;
         }
+        let snapshot = self.cells.clone();
+        let mut normal_moves: Vec<(usize, usize, Block)> = Vec::new();
         for x in 0..self.width {
             for y in 1..self.height {
                 let idx = self.idx(x, y);
                 let below = self.idx(x, y - 1);
-                if self.cells[idx].is_some() && self.cells[below].is_none() {
-                    self.cells[below] = self.cells[idx];
-                    self.cells[idx] = None;
-                    moved = true;
+                if let Some(Block::Normal { .. }) = snapshot[idx] {
+                    if snapshot[below].is_none() {
+                        normal_moves.push((idx, below, snapshot[idx].unwrap()));
+                    }
                 }
+            }
+        }
+
+        let mut visited = vec![false; snapshot.len()];
+        let mut garbage_moves: Vec<(usize, usize, Block)> = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.idx(x, y);
+                if visited[idx] {
+                    continue;
+                }
+                if let Some(Block::Garbage { .. }) = snapshot[idx] {
+                    let mut stack = vec![(x, y)];
+                    let mut component: Vec<(usize, usize)> = Vec::new();
+                    visited[idx] = true;
+                    while let Some((cx, cy)) = stack.pop() {
+                        component.push((cx, cy));
+                        let neighbors = [
+                            (cx.wrapping_sub(1), cy, cx > 0),
+                            (cx + 1, cy, cx + 1 < self.width),
+                            (cx, cy.wrapping_sub(1), cy > 0),
+                            (cx, cy + 1, cy + 1 < self.height),
+                        ];
+                        for (nx, ny, ok) in neighbors {
+                            if !ok {
+                                continue;
+                            }
+                            let nidx = self.idx(nx, ny);
+                            if !visited[nidx] {
+                                if let Some(Block::Garbage { .. }) = snapshot[nidx] {
+                                    visited[nidx] = true;
+                                    stack.push((nx, ny));
+                                }
+                            }
+                        }
+                    }
+
+                    let mut can_fall = true;
+                    for &(cx, cy) in &component {
+                        if cy == 0 {
+                            can_fall = false;
+                            break;
+                        }
+                        let below = self.idx(cx, cy - 1);
+                        if snapshot[below].is_some() {
+                            can_fall = false;
+                            break;
+                        }
+                    }
+
+                    if can_fall {
+                        for (cx, cy) in component {
+                            let from = self.idx(cx, cy);
+                            let to = self.idx(cx, cy - 1);
+                            garbage_moves.push((from, to, snapshot[from].unwrap()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !normal_moves.is_empty() || !garbage_moves.is_empty() {
+            moved = true;
+            for (from, _, _) in normal_moves.iter().chain(garbage_moves.iter()) {
+                self.cells[*from] = None;
+            }
+            for (_, to, block) in normal_moves.into_iter().chain(garbage_moves.into_iter()) {
+                self.cells[to] = Some(block);
             }
         }
         moved
@@ -237,8 +327,8 @@ impl Grid {
     }
 
     fn same_color(&self, ax: usize, ay: usize, bx: usize, by: usize) -> bool {
-        match (self.get(ax, ay), self.get(bx, by)) {
-            (Some(a), Some(b)) => a.color == b.color,
+        match (self.get(ax, ay).and_then(Block::color), self.get(bx, by).and_then(Block::color)) {
+            (Some(a), Some(b)) => a == b,
             _ => false,
         }
     }
@@ -272,7 +362,7 @@ impl Grid {
                 }
                 color = random_color(&mut rng);
             }
-            self.cells[idx] = Some(Block { color });
+            self.cells[idx] = Some(Block::Normal { color });
         }
     }
 
@@ -303,20 +393,28 @@ impl Grid {
             None
         };
 
-        let horiz_left = left1.map(|b| b.color == color).unwrap_or(false)
-            && left2.map(|b| b.color == color).unwrap_or(false);
-        let horiz_right = right1.map(|b| b.color == color).unwrap_or(false)
-            && right2.map(|b| b.color == color).unwrap_or(false);
-        let horiz_split = left1.map(|b| b.color == color).unwrap_or(false)
-            && right1.map(|b| b.color == color).unwrap_or(false);
+        let horiz_left = left1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
+            && left2.and_then(Block::color).map(|b| b == color).unwrap_or(false);
+        let horiz_right = right1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
+            && right2.and_then(Block::color).map(|b| b == color).unwrap_or(false);
+        let horiz_split = left1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
+            && right1.and_then(Block::color).map(|b| b == color).unwrap_or(false);
 
         if horiz_left || horiz_right || horiz_split {
             return true;
         }
 
         if y + 2 < self.height {
-            let up1 = self.get(x, y + 1).map(|b| b.color == color).unwrap_or(false);
-            let up2 = self.get(x, y + 2).map(|b| b.color == color).unwrap_or(false);
+            let up1 = self
+                .get(x, y + 1)
+                .and_then(Block::color)
+                .map(|b| b == color)
+                .unwrap_or(false);
+            let up2 = self
+                .get(x, y + 2)
+                .and_then(Block::color)
+                .map(|b| b == color)
+                .unwrap_or(false);
             if up1 && up2 {
                 return true;
             }
@@ -324,6 +422,166 @@ impl Grid {
 
         false
     }
+
+    fn count_match_groups(&self, marks: &[bool]) -> u32 {
+        let mut visited = vec![false; marks.len()];
+        let mut groups = 0;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.idx(x, y);
+                if !marks[idx] || visited[idx] {
+                    continue;
+                }
+                groups += 1;
+                let mut stack = vec![(x, y)];
+                visited[idx] = true;
+                while let Some((cx, cy)) = stack.pop() {
+                    let neighbors = [
+                        (cx.wrapping_sub(1), cy, cx > 0),
+                        (cx + 1, cy, cx + 1 < self.width),
+                        (cx, cy.wrapping_sub(1), cy > 0),
+                        (cx, cy + 1, cy + 1 < self.height),
+                    ];
+                    for (nx, ny, ok) in neighbors {
+                        if !ok {
+                            continue;
+                        }
+                        let nidx = self.idx(nx, ny);
+                        if marks[nidx] && !visited[nidx] {
+                            visited[nidx] = true;
+                            stack.push((nx, ny));
+                        }
+                    }
+                }
+            }
+        }
+        groups
+    }
+
+    pub fn crack_adjacent_garbage(&mut self, marks: &[bool]) -> u32 {
+        let mut cracked = 0;
+        let mut visited = vec![false; self.cells.len()];
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.idx(x, y);
+                if visited[idx] {
+                    continue;
+                }
+                if let Some(Block::Garbage { .. }) = self.cells[idx] {
+                    let mut stack = vec![(x, y)];
+                    let mut component: Vec<(usize, usize)> = Vec::new();
+                    visited[idx] = true;
+                    let mut adjacent = false;
+                    while let Some((cx, cy)) = stack.pop() {
+                        component.push((cx, cy));
+                        if self.has_adjacent_mark(cx, cy, marks) {
+                            adjacent = true;
+                        }
+                        let neighbors = [
+                            (cx.wrapping_sub(1), cy, cx > 0),
+                            (cx + 1, cy, cx + 1 < self.width),
+                            (cx, cy.wrapping_sub(1), cy > 0),
+                            (cx, cy + 1, cy + 1 < self.height),
+                        ];
+                        for (nx, ny, ok) in neighbors {
+                            if !ok {
+                                continue;
+                            }
+                            let nidx = self.idx(nx, ny);
+                            if !visited[nidx] {
+                                if let Some(Block::Garbage { .. }) = self.cells[nidx] {
+                                    visited[nidx] = true;
+                                    stack.push((nx, ny));
+                                }
+                            }
+                        }
+                    }
+
+                    if adjacent {
+                        for (cx, cy) in component {
+                            if let Some(Block::Garbage { cracked: false }) = self.get(cx, cy) {
+                                self.set(cx, cy, Some(Block::Garbage { cracked: true }));
+                                cracked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cracked
+    }
+
+    fn has_adjacent_mark(&self, x: usize, y: usize, marks: &[bool]) -> bool {
+        let neighbors = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < self.width),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < self.height),
+        ];
+        for (nx, ny, ok) in neighbors {
+            if !ok {
+                continue;
+            }
+            if marks[self.idx(nx, ny)] {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn convert_cracked_garbage(&mut self) -> u32 {
+        let mut rng = thread_rng();
+        let mut converted = 0;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if let Some(Block::Garbage { cracked: true }) = self.get(x, y) {
+                    let mut color = random_color(&mut rng);
+                    for _ in 0..10 {
+                        if !self.would_create_match(x, y, color) {
+                            break;
+                        }
+                        color = random_color(&mut rng);
+                    }
+                    self.set(x, y, Some(Block::Normal { color }));
+                    converted += 1;
+                }
+            }
+        }
+        converted
+    }
+
+    pub fn push_garbage_row(&mut self, mask: &[bool]) {
+        if self.height == 0 || self.width == 0 {
+            return;
+        }
+        if mask.len() != self.width {
+            return;
+        }
+        if self.top_row_occupied() {
+            return;
+        }
+        for y in (1..self.height).rev() {
+            for x in 0..self.width {
+                let below = self.idx(x, y - 1);
+                let here = self.idx(x, y);
+                self.cells[here] = self.cells[below];
+            }
+        }
+        for x in 0..self.width {
+            let idx = self.idx(x, 0);
+            if mask[x] {
+                self.cells[idx] = Some(Block::Garbage { cracked: false });
+            } else {
+                self.cells[idx] = None;
+            }
+        }
+    }
+}
+
+pub struct ClearStats {
+    pub cleared: u32,
+    pub groups: u32,
+    pub marks: Vec<bool>,
 }
 
 fn random_color(rng: &mut ThreadRng) -> BlockColor {
