@@ -1413,11 +1413,11 @@ fn update_player_visuals(
         for x in 0..player.grid.width {
             let idx = y * player.grid.width + x;
             let color = match player.grid.get(x, y).map(|b| b.color) {
-                Some(BlockColor::Red) => Color::srgb(0.85, 0.2, 0.2),
-                Some(BlockColor::Green) => Color::srgb(0.2, 0.8, 0.3),
-                Some(BlockColor::Blue) => Color::srgb(0.2, 0.4, 0.9),
-                Some(BlockColor::Yellow) => Color::srgb(0.9, 0.8, 0.2),
-                Some(BlockColor::Purple) => Color::srgb(0.6, 0.3, 0.9),
+                Some(BlockColor::Red) => Color::srgb(0.9, 0.36, 0.5),
+                Some(BlockColor::Green) => Color::srgb(0.18, 0.78, 0.5),
+                Some(BlockColor::Blue) => Color::srgb(0.36, 0.52, 0.96),
+                Some(BlockColor::Yellow) => Color::srgb(0.95, 0.76, 0.28),
+                Some(BlockColor::Purple) => Color::srgb(0.62, 0.4, 0.9),
                 None => Color::srgba(0.0, 0.0, 0.0, 0.0),
             };
             if let Some(entity) = view.blocks.get(idx) {
