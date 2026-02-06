@@ -8,6 +8,7 @@ use game::{BlockColor, Cursor, Grid, SwapCmd};
 const GRID_W: usize = 6;
 const GRID_H: usize = 12;
 const CELL_SIZE: f32 = 32.0;
+const BLOCK_INSET: f32 = 6.0;
 const FRAME_THICKNESS: f32 = 4.0;
 const CURSOR_BORDER_THICKNESS: f32 = 2.0;
 const PANEL_WIDTH: f32 = 140.0;
@@ -1043,7 +1044,7 @@ fn spawn_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) -> Vec<Entity>
                 .spawn(SpriteBundle {
                     sprite: Sprite {
                         color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                        custom_size: Some(Vec2::splat(CELL_SIZE - 2.0)),
+                        custom_size: Some(Vec2::splat(CELL_SIZE - BLOCK_INSET)),
                         ..Default::default()
                     },
                     transform: Transform::from_translation(pos),
