@@ -919,6 +919,9 @@ fn rise_player(delta: std::time::Duration, player: &mut PlayerState) -> bool {
         if player.rise_paused {
             return false;
         }
+        if !player.settled || player.grid.has_falling_garbage() {
+            return false;
+        }
         if player.grid.top_row_occupied() {
             return true;
         }
@@ -1080,8 +1083,7 @@ fn add_garbage_for_clear(player: &mut PlayerState, cleared: u32, groups: u32) {
 
 fn resolve_garbage(
     mut players: ResMut<Players>,
-    mut match_over: ResMut<MatchOver>,
-    mut match_over_timer: ResMut<MatchOverTimer>,
+    match_over: Res<MatchOver>,
     mode: Res<GameMode>,
 ) {
     if match_over.active || *mode != GameMode::TwoPlayer {
@@ -1111,69 +1113,56 @@ fn resolve_garbage(
         players.p2.garbage_incoming -= cancel;
     }
 
-    apply_incoming_garbage(
-        &mut players.p1,
-        PlayerId::P1,
-        PlayerId::P2,
-        &mut match_over,
-        &mut match_over_timer,
-    );
-    if match_over.active {
-        return;
-    }
-    apply_incoming_garbage(
-        &mut players.p2,
-        PlayerId::P2,
-        PlayerId::P1,
-        &mut match_over,
-        &mut match_over_timer,
-    );
+    apply_incoming_garbage(&mut players.p1);
+    apply_incoming_garbage(&mut players.p2);
 }
 
-fn apply_incoming_garbage(
-    player: &mut PlayerState,
-    _player_id: PlayerId,
-    opponent_id: PlayerId,
-    match_over: &mut MatchOver,
-    match_over_timer: &mut MatchOverTimer,
-) {
+fn apply_incoming_garbage(player: &mut PlayerState) {
     if player.garbage_incoming == 0 {
         return;
     }
     if player.pending_clear || !player.settled || player.rise_paused {
         return;
     }
-    let width = player.grid.width as u32;
-    let mut units = player.garbage_incoming;
+    let units = player.garbage_incoming;
     player.garbage_incoming = 0;
     let mut rng = thread_rng();
 
-    while units > 0 {
-        if player.grid.top_row_occupied() {
-            match_over.active = true;
-            match_over.winner = Some(opponent_id);
-            match_over_timer.seconds = 0.0;
-            return;
-        }
-        let row_units = units.min(width) as usize;
-        let mask = build_garbage_mask(&player.grid, row_units, &mut rng);
-        player.grid.push_garbage_row(&mask);
-        units -= row_units as u32;
+    let rows = build_garbage_rows(player.grid.width, units, &mut rng);
+    if !player.grid.insert_garbage_rows_from_top(&rows) {
+        player.garbage_incoming = player.garbage_incoming.saturating_add(units);
+        return;
     }
     player.settled = false;
 }
 
-fn build_garbage_mask(grid: &Grid, garbage_blocks: usize, rng: &mut ThreadRng) -> Vec<bool> {
-    let width = grid.width;
+fn build_garbage_rows(width: usize, units: u32, rng: &mut ThreadRng) -> Vec<Vec<bool>> {
+    if units == 0 || width == 0 {
+        return Vec::new();
+    }
+    let units = units as usize;
+    let full_rows = units / width;
+    let rem = units % width;
+    let mut rows = Vec::with_capacity(full_rows + if rem > 0 { 1 } else { 0 });
+    for _ in 0..full_rows {
+        rows.push(vec![true; width]);
+    }
+    if rem > 0 {
+        rows.push(build_partial_garbage_row(width, rem, rng));
+    }
+    rows
+}
+
+fn build_partial_garbage_row(width: usize, blocks: usize, rng: &mut ThreadRng) -> Vec<bool> {
     let mut mask = vec![false; width];
-    if garbage_blocks >= width {
+    if blocks >= width {
         mask.fill(true);
         return mask;
     }
 
-    let max_start = width - garbage_blocks;
+    let max_start = width - blocks;
     let start = rng.gen_range(0..=max_start);
-    for x in start..start + garbage_blocks {
+    for x in start..start + blocks {
         mask[x] = true;
     }
 

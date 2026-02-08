@@ -227,6 +227,10 @@ impl Grid {
                         }
                     }
 
+                    let mut in_component = vec![false; snapshot.len()];
+                    for &(cx, cy) in &component {
+                        in_component[self.idx(cx, cy)] = true;
+                    }
                     let mut can_fall = true;
                     for &(cx, cy) in &component {
                         if cy == 0 {
@@ -234,7 +238,7 @@ impl Grid {
                             break;
                         }
                         let below = self.idx(cx, cy - 1);
-                        if snapshot[below].is_some() {
+                        if snapshot[below].is_some() && !in_component[below] {
                             can_fall = false;
                             break;
                         }
@@ -261,6 +265,65 @@ impl Grid {
             }
         }
         moved
+    }
+
+    pub fn has_falling_garbage(&self) -> bool {
+        let mut visited = vec![false; self.cells.len()];
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.idx(x, y);
+                if visited[idx] {
+                    continue;
+                }
+                if let Some(Block::Garbage { .. }) = self.cells[idx] {
+                    let mut stack = vec![(x, y)];
+                    let mut component: Vec<(usize, usize)> = Vec::new();
+                    visited[idx] = true;
+                    while let Some((cx, cy)) = stack.pop() {
+                        component.push((cx, cy));
+                        let neighbors = [
+                            (cx.wrapping_sub(1), cy, cx > 0),
+                            (cx + 1, cy, cx + 1 < self.width),
+                            (cx, cy.wrapping_sub(1), cy > 0),
+                            (cx, cy + 1, cy + 1 < self.height),
+                        ];
+                        for (nx, ny, ok) in neighbors {
+                            if !ok {
+                                continue;
+                            }
+                            let nidx = self.idx(nx, ny);
+                            if !visited[nidx] {
+                                if let Some(Block::Garbage { .. }) = self.cells[nidx] {
+                                    visited[nidx] = true;
+                                    stack.push((nx, ny));
+                                }
+                            }
+                        }
+                    }
+
+                    let mut in_component = vec![false; self.cells.len()];
+                    for &(cx, cy) in &component {
+                        in_component[self.idx(cx, cy)] = true;
+                    }
+                    let mut can_fall = true;
+                    for &(cx, cy) in &component {
+                        if cy == 0 {
+                            can_fall = false;
+                            break;
+                        }
+                        let below = self.idx(cx, cy - 1);
+                        if self.cells[below].is_some() && !in_component[below] {
+                            can_fall = false;
+                            break;
+                        }
+                    }
+                    if can_fall {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn find_matches(&self) -> Vec<bool> {
@@ -550,31 +613,38 @@ impl Grid {
         converted
     }
 
-    pub fn push_garbage_row(&mut self, mask: &[bool]) {
-        if self.height == 0 || self.width == 0 {
-            return;
+    pub fn insert_garbage_rows_from_top(&mut self, rows: &[Vec<bool>]) -> bool {
+        if rows.is_empty() {
+            return true;
         }
-        if mask.len() != self.width {
-            return;
+        if rows.len() > self.height {
+            return false;
         }
-        if self.top_row_occupied() {
-            return;
+        for row in rows {
+            if row.len() != self.width {
+                return false;
+            }
         }
-        for y in (1..self.height).rev() {
+
+        let start_y = self.height - rows.len();
+        for (row_idx, row) in rows.iter().enumerate() {
+            let y = start_y + row_idx;
             for x in 0..self.width {
-                let below = self.idx(x, y - 1);
-                let here = self.idx(x, y);
-                self.cells[here] = self.cells[below];
+                if row[x] && self.get(x, y).is_some() {
+                    return false;
+                }
             }
         }
-        for x in 0..self.width {
-            let idx = self.idx(x, 0);
-            if mask[x] {
-                self.cells[idx] = Some(Block::Garbage { cracked: false });
-            } else {
-                self.cells[idx] = None;
+
+        for (row_idx, row) in rows.iter().enumerate() {
+            let y = start_y + row_idx;
+            for x in 0..self.width {
+                if row[x] {
+                    self.set(x, y, Some(Block::Garbage { cracked: false }));
+                }
             }
         }
+        true
     }
 }
 
