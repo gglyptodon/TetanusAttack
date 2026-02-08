@@ -1,13 +1,15 @@
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use rand::prelude::*;
 
 mod game;
-use game::{BlockColor, Cursor, Grid, SwapCmd};
+use game::{Block, BlockColor, Cursor, Grid, SwapCmd};
 
 const GRID_W: usize = 6;
 const GRID_H: usize = 12;
 const CELL_SIZE: f32 = 32.0;
+const BLOCK_INSET: f32 = 6.0;
 const FRAME_THICKNESS: f32 = 4.0;
 const CURSOR_BORDER_THICKNESS: f32 = 2.0;
 const PANEL_WIDTH: f32 = 140.0;
@@ -22,6 +24,8 @@ const CLEAR_DELAY_SECONDS: f32 = 0.1;
 const RISE_PAUSE_SECONDS: f32 = 0.6;
 const INPUT_REPEAT_DELAY: f32 = 0.25;
 const INPUT_REPEAT_INTERVAL: f32 = 0.08;
+const GARBAGE_CHAIN_BONUS: u32 = 2;
+const GARBAGE_CHAIN_CAP: u32 = 24;
 
 #[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 enum AppState {
@@ -82,6 +86,11 @@ struct PlayerState {
     repeat_dir: Option<IVec2>,
     repeat_timer: Timer,
     repeat_initial: bool,
+    chain_active: bool,
+    chain_index: u32,
+    chain_ended: bool,
+    garbage_outgoing: u32,
+    garbage_incoming: u32,
 }
 
 impl PlayerState {
@@ -102,6 +111,11 @@ impl PlayerState {
             repeat_dir: None,
             repeat_timer: Timer::from_seconds(INPUT_REPEAT_DELAY, TimerMode::Once),
             repeat_initial: true,
+            chain_active: false,
+            chain_index: 0,
+            chain_ended: false,
+            garbage_outgoing: 0,
+            garbage_incoming: 0,
         }
     }
 }
@@ -173,17 +187,35 @@ fn main() {
         .add_systems(Update, handle_menu_input.run_if(in_state(AppState::Title)))
         .add_systems(Update, handle_pause_input.run_if(in_state(AppState::Pause)))
         .add_systems(Update, handle_input.run_if(in_state(AppState::Game)))
-        .add_systems(Update, handle_pause_request.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            handle_pause_request.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, handle_restart.run_if(in_state(AppState::Game)))
-        .add_systems(Update, handle_game_over_back.run_if(in_state(AppState::Game)))
-        .add_systems(Update, apply_gravity_system.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            handle_game_over_back.run_if(in_state(AppState::Game)),
+        )
+        .add_systems(
+            Update,
+            apply_gravity_system.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, update_time.run_if(in_state(AppState::Game)))
-        .add_systems(Update, update_game_over_timer.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            update_game_over_timer.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, update_panel_layout.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_visuals.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_ui_text.run_if(in_state(AppState::Game)))
         .add_systems(Update, rise_stack.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_clear_delay.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            resolve_garbage
+                .run_if(in_state(AppState::Game))
+                .after(update_clear_delay),
+        )
         .add_systems(Update, update_rise_pause.run_if(in_state(AppState::Game)))
         .run();
 }
@@ -227,37 +259,45 @@ fn setup_menu(mut commands: Commands, selection: Res<MenuSelection>) {
             ..Default::default()
         });
 
-        one_player = Some(parent.spawn(TextBundle {
-            text: Text::from_section(
-                "1 PLAYER",
-                TextStyle {
-                    font: Default::default(),
-                    font_size: 28.0,
-                    color: if selection.two_player {
-                        Color::srgb(0.7, 0.7, 0.75)
-                    } else {
-                        Color::srgb(0.2, 0.9, 0.6)
-                    },
-                },
-            ),
-            ..Default::default()
-        }).id());
+        one_player = Some(
+            parent
+                .spawn(TextBundle {
+                    text: Text::from_section(
+                        "1 PLAYER",
+                        TextStyle {
+                            font: Default::default(),
+                            font_size: 28.0,
+                            color: if selection.two_player {
+                                Color::srgb(0.7, 0.7, 0.75)
+                            } else {
+                                Color::srgb(0.2, 0.9, 0.6)
+                            },
+                        },
+                    ),
+                    ..Default::default()
+                })
+                .id(),
+        );
 
-        two_player = Some(parent.spawn(TextBundle {
-            text: Text::from_section(
-                "2 PLAYER",
-                TextStyle {
-                    font: Default::default(),
-                    font_size: 28.0,
-                    color: if selection.two_player {
-                        Color::srgb(0.2, 0.9, 0.6)
-                    } else {
-                        Color::srgb(0.7, 0.7, 0.75)
-                    },
-                },
-            ),
-            ..Default::default()
-        }).id());
+        two_player = Some(
+            parent
+                .spawn(TextBundle {
+                    text: Text::from_section(
+                        "2 PLAYER",
+                        TextStyle {
+                            font: Default::default(),
+                            font_size: 28.0,
+                            color: if selection.two_player {
+                                Color::srgb(0.2, 0.9, 0.6)
+                            } else {
+                                Color::srgb(0.7, 0.7, 0.75)
+                            },
+                        },
+                    ),
+                    ..Default::default()
+                })
+                .id(),
+        );
 
         parent.spawn(TextBundle {
             text: Text::from_section(
@@ -274,7 +314,10 @@ fn setup_menu(mut commands: Commands, selection: Res<MenuSelection>) {
 
     commands.insert_resource(MenuRoot(root));
     if let (Some(one_player), Some(two_player)) = (one_player, two_player) {
-        commands.insert_resource(MenuTextEntities { one_player, two_player });
+        commands.insert_resource(MenuTextEntities {
+            one_player,
+            two_player,
+        });
     }
 }
 
@@ -330,7 +373,8 @@ fn setup_pause(mut commands: Commands) {
                     font_size: 18.0,
                     color: Color::srgb(0.7, 0.7, 0.75),
                 },
-            ).with_justify(JustifyText::Center),
+            )
+            .with_justify(JustifyText::Center),
             ..Default::default()
         });
     });
@@ -473,12 +517,7 @@ fn setup_game(
 
     let (p1_origin, p2_origin) = compute_player_origins(*mode);
 
-    let p1_view = spawn_player_view(
-        &mut commands,
-        &players.p1.grid,
-        p1_origin,
-        PanelSide::Right,
-    );
+    let p1_view = spawn_player_view(&mut commands, &players.p1.grid, p1_origin, PanelSide::Right);
 
     let p2_view = if *mode == GameMode::TwoPlayer {
         Some(spawn_player_view(
@@ -491,7 +530,10 @@ fn setup_game(
         None
     };
 
-    commands.insert_resource(PlayerViews { p1: p1_view, p2: p2_view });
+    commands.insert_resource(PlayerViews {
+        p1: p1_view,
+        p2: p2_view,
+    });
     initialized.0 = true;
 }
 
@@ -510,6 +552,11 @@ fn reset_player(player: &mut PlayerState) {
     player.rise_paused = false;
     player.rise_level = 0;
     player.rise_timer = Timer::from_seconds(RISE_SECONDS, TimerMode::Repeating);
+    player.chain_active = false;
+    player.chain_index = 0;
+    player.chain_ended = false;
+    player.garbage_outgoing = 0;
+    player.garbage_incoming = 0;
 }
 
 fn compute_player_origins(mode: GameMode) -> (Vec2, Vec2) {
@@ -585,9 +632,21 @@ fn handle_input(
         handle_gamepad(p2_gamepad, buttons.as_ref(), &mut players.p2);
     }
 
-    handle_repeat_p1(keys.as_ref(), buttons.as_ref(), p1_gamepad, &mut players.p1, delta);
+    handle_repeat_p1(
+        keys.as_ref(),
+        buttons.as_ref(),
+        p1_gamepad,
+        &mut players.p1,
+        delta,
+    );
     if *mode == GameMode::TwoPlayer {
-        handle_repeat_p2(keys.as_ref(), buttons.as_ref(), p2_gamepad, &mut players.p2, delta);
+        handle_repeat_p2(
+            keys.as_ref(),
+            buttons.as_ref(),
+            p2_gamepad,
+            &mut players.p2,
+            delta,
+        );
     }
 }
 
@@ -706,7 +765,10 @@ fn dir_state_p1(
     let gp_just = gamepad.map_or(false, |pad| {
         buttons.just_pressed(GamepadButton::new(pad, button))
     });
-    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+    (
+        keys.just_pressed(key) || gp_just,
+        keys.pressed(key) || gp_pressed,
+    )
 }
 
 fn dir_state_p2(
@@ -727,7 +789,10 @@ fn dir_state_p2(
     let gp_just = gamepad.map_or(false, |pad| {
         buttons.just_pressed(GamepadButton::new(pad, button))
     });
-    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+    (
+        keys.just_pressed(key) || gp_just,
+        keys.pressed(key) || gp_pressed,
+    )
 }
 
 fn select_direction(
@@ -741,7 +806,10 @@ fn select_direction(
         }
     }
     if let Some(dir) = current {
-        if pressed.iter().any(|(is_pressed, d)| *is_pressed && *d == dir) {
+        if pressed
+            .iter()
+            .any(|(is_pressed, d)| *is_pressed && *d == dir)
+        {
             return Some(dir);
         }
     }
@@ -753,11 +821,7 @@ fn select_direction(
     None
 }
 
-fn update_repeat_move(
-    player: &mut PlayerState,
-    dir: Option<IVec2>,
-    delta: std::time::Duration,
-) {
+fn update_repeat_move(player: &mut PlayerState, dir: Option<IVec2>, delta: std::time::Duration) {
     if let Some(dir) = dir {
         let dir_changed = player.repeat_dir != Some(dir);
         if dir_changed {
@@ -783,9 +847,12 @@ fn update_repeat_move(
 }
 
 fn move_cursor(player: &mut PlayerState, dir: IVec2) {
-    player
-        .cursor
-        .move_by(dir.x as isize, dir.y as isize, player.grid.width, player.grid.height);
+    player.cursor.move_by(
+        dir.x as isize,
+        dir.y as isize,
+        player.grid.width,
+        player.grid.height,
+    );
 }
 
 fn try_swap(player: &mut PlayerState) {
@@ -809,18 +876,21 @@ fn handle_restart(
     if match_over_timer.seconds < 1.0 {
         return;
     }
-    let keyboard_restart = keys.get_just_pressed().any(|k| {
-        *k != KeyCode::Escape && *k != KeyCode::Tab && *k != KeyCode::Backspace
-    });
-    let gamepad_restart = buttons
+    let keyboard_restart = keys
         .get_just_pressed()
-        .any(|b| !matches!(b.button_type, GamepadButtonType::DPadUp
-            | GamepadButtonType::DPadDown
-            | GamepadButtonType::DPadLeft
-            | GamepadButtonType::DPadRight
-            | GamepadButtonType::Start
-            | GamepadButtonType::Select
-            | GamepadButtonType::Mode));
+        .any(|k| *k != KeyCode::Escape && *k != KeyCode::Tab && *k != KeyCode::Backspace);
+    let gamepad_restart = buttons.get_just_pressed().any(|b| {
+        !matches!(
+            b.button_type,
+            GamepadButtonType::DPadUp
+                | GamepadButtonType::DPadDown
+                | GamepadButtonType::DPadLeft
+                | GamepadButtonType::DPadRight
+                | GamepadButtonType::Start
+                | GamepadButtonType::Select
+                | GamepadButtonType::Mode
+        )
+    });
     if keyboard_restart || gamepad_restart {
         reset_player(&mut players.p1);
         reset_player(&mut players.p2);
@@ -892,6 +962,9 @@ fn rise_stack(
 fn rise_player(delta: std::time::Duration, player: &mut PlayerState) -> bool {
     if player.rise_timer.tick(delta).just_finished() {
         if player.rise_paused {
+            return false;
+        }
+        if !player.settled || player.grid.has_falling_garbage() {
             return false;
         }
         if player.grid.top_row_occupied() {
@@ -970,9 +1043,20 @@ fn process_player_gravity(delta: std::time::Duration, player: &mut PlayerState) 
         let moved = player.grid.apply_gravity_step();
         if !moved {
             player.settled = true;
-            if !player.pending_clear && player.grid.has_matches() {
+            let has_matches = player.grid.has_matches();
+            if !player.pending_clear && has_matches {
                 player.pending_clear = true;
                 player.clear_timer.reset();
+            }
+            if player.chain_active && !player.pending_clear && !has_matches {
+                player.chain_active = false;
+                player.chain_index = 0;
+                player.chain_ended = true;
+                let converted = player.grid.convert_cracked_garbage();
+                if converted > 0 && player.grid.has_matches() {
+                    player.pending_clear = true;
+                    player.clear_timer.reset();
+                }
             }
         } else {
             player.settled = false;
@@ -1002,14 +1086,132 @@ fn process_clear_delay(delta: std::time::Duration, player: &mut PlayerState) {
         return;
     }
     if player.clear_timer.tick(delta).just_finished() {
-        let cleared = player.grid.clear_matches_once();
-        if cleared > 0 {
+        let stats = player.grid.clear_matches_once_with_stats();
+        if stats.cleared > 0 {
             player.rise_paused = true;
             player.rise_pause_timer.reset();
-            player.score += cleared;
+            player.score += stats.cleared;
+            player.grid.crack_adjacent_garbage(&stats.marks);
+            if !player.chain_active {
+                player.chain_active = true;
+                player.chain_index = 1;
+            } else {
+                player.chain_index += 1;
+            }
+            add_garbage_for_clear(player, stats.cleared, stats.groups);
         }
         player.pending_clear = false;
     }
+}
+
+fn add_garbage_for_clear(player: &mut PlayerState, cleared: u32, groups: u32) {
+    let combo_units = cleared.saturating_sub(3);
+    let multi_units = groups.saturating_sub(1);
+    let chain_units = if player.chain_index > 1 {
+        GARBAGE_CHAIN_BONUS * (player.chain_index - 1)
+    } else {
+        0
+    };
+    let total = combo_units + multi_units + chain_units;
+    if cleared < 4 && player.chain_index < 2 {
+        return;
+    }
+    if total == 0 {
+        return;
+    }
+    let remaining = GARBAGE_CHAIN_CAP.saturating_sub(player.garbage_outgoing);
+    if remaining == 0 {
+        return;
+    }
+    player.garbage_outgoing += total.min(remaining);
+}
+
+fn resolve_garbage(mut players: ResMut<Players>, match_over: Res<MatchOver>, mode: Res<GameMode>) {
+    if match_over.active || *mode != GameMode::TwoPlayer {
+        return;
+    }
+
+    if players.p1.chain_ended {
+        if players.p1.garbage_outgoing > 0 {
+            players.p2.garbage_incoming = players
+                .p2
+                .garbage_incoming
+                .saturating_add(players.p1.garbage_outgoing);
+            players.p1.garbage_outgoing = 0;
+        }
+        players.p1.chain_ended = false;
+    }
+    if players.p2.chain_ended {
+        if players.p2.garbage_outgoing > 0 {
+            players.p1.garbage_incoming = players
+                .p1
+                .garbage_incoming
+                .saturating_add(players.p2.garbage_outgoing);
+            players.p2.garbage_outgoing = 0;
+        }
+        players.p2.chain_ended = false;
+    }
+
+    let cancel = players.p1.garbage_incoming.min(players.p2.garbage_incoming);
+    if cancel > 0 {
+        players.p1.garbage_incoming -= cancel;
+        players.p2.garbage_incoming -= cancel;
+    }
+
+    apply_incoming_garbage(&mut players.p1);
+    apply_incoming_garbage(&mut players.p2);
+}
+
+fn apply_incoming_garbage(player: &mut PlayerState) {
+    if player.garbage_incoming == 0 {
+        return;
+    }
+    if player.pending_clear || !player.settled || player.rise_paused {
+        return;
+    }
+    let units = player.garbage_incoming;
+    player.garbage_incoming = 0;
+    let mut rng = thread_rng();
+
+    let rows = build_garbage_rows(player.grid.width, units, &mut rng);
+    if !player.grid.insert_garbage_rows_from_top(&rows) {
+        player.garbage_incoming = player.garbage_incoming.saturating_add(units);
+        return;
+    }
+    player.settled = false;
+}
+
+fn build_garbage_rows(width: usize, units: u32, rng: &mut ThreadRng) -> Vec<Vec<bool>> {
+    if units == 0 || width == 0 {
+        return Vec::new();
+    }
+    let units = units as usize;
+    let full_rows = units / width;
+    let rem = units % width;
+    let mut rows = Vec::with_capacity(full_rows + if rem > 0 { 1 } else { 0 });
+    for _ in 0..full_rows {
+        rows.push(vec![true; width]);
+    }
+    if rem > 0 {
+        rows.push(build_partial_garbage_row(width, rem, rng));
+    }
+    rows
+}
+
+fn build_partial_garbage_row(width: usize, blocks: usize, rng: &mut ThreadRng) -> Vec<bool> {
+    let mut mask = vec![false; width];
+    if blocks >= width {
+        mask.fill(true);
+        return mask;
+    }
+
+    let max_start = width - blocks;
+    let start = rng.gen_range(0..=max_start);
+    for x in start..start + blocks {
+        mask[x] = true;
+    }
+
+    mask
 }
 
 fn update_rise_pause(
@@ -1043,7 +1245,7 @@ fn spawn_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) -> Vec<Entity>
                 .spawn(SpriteBundle {
                     sprite: Sprite {
                         color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                        custom_size: Some(Vec2::splat(CELL_SIZE - 2.0)),
+                        custom_size: Some(Vec2::splat(CELL_SIZE - BLOCK_INSET)),
                         ..Default::default()
                     },
                     transform: Transform::from_translation(pos),
@@ -1063,15 +1265,15 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) {
             let pos = cell_center(grid, x, y, origin);
             commands
                 .spawn(SpriteBundle {
-                sprite: Sprite {
-                    color: Color::srgba(0.1, 0.1, 0.12, 0.35),
-                    custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
+                    sprite: Sprite {
+                        color: Color::srgba(0.1, 0.1, 0.12, 0.35),
+                        custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
+                        ..Default::default()
+                    },
+                    transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
                     ..Default::default()
-                },
-                transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
-                ..Default::default()
-            })
-            .insert(GameEntity);
+                })
+                .insert(GameEntity);
         }
     }
 }
@@ -1100,15 +1302,15 @@ fn spawn_frame_and_panel(commands: &mut Commands, origin: Vec2, _panel_side: Pan
     ] {
         commands
             .spawn(SpriteBundle {
-            sprite: Sprite {
-                color: border_color,
-                custom_size: Some(size),
+                sprite: Sprite {
+                    color: border_color,
+                    custom_size: Some(size),
+                    ..Default::default()
+                },
+                transform: Transform::from_translation(pos),
                 ..Default::default()
-            },
-            transform: Transform::from_translation(pos),
-            ..Default::default()
-        })
-        .insert(GameEntity);
+            })
+            .insert(GameEntity);
     }
 
     let panel = commands
@@ -1131,15 +1333,15 @@ fn spawn_frame_and_panel(commands: &mut Commands, origin: Vec2, _panel_side: Pan
     commands.entity(panel).with_children(|parent| {
         parent
             .spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Px(28.0),
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(28.0),
+                    ..Default::default()
+                },
+                background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
                 ..Default::default()
-            },
-            background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
-            ..Default::default()
-        })
-        .insert(GameEntity);
+            })
+            .insert(GameEntity);
     });
 
     panel
@@ -1320,9 +1522,7 @@ fn position_panel(
 ) {
     let left = match view.panel_side {
         PanelSide::Right => window_w / 2.0 + view.origin.x + grid_w / 2.0 + PANEL_GAP,
-        PanelSide::Left => {
-            window_w / 2.0 + view.origin.x - grid_w / 2.0 - PANEL_GAP - PANEL_WIDTH
-        }
+        PanelSide::Left => window_w / 2.0 + view.origin.x - grid_w / 2.0 - PANEL_GAP - PANEL_WIDTH,
     };
 
     if let Ok(mut style) = style_query.get_mut(view.panel) {
@@ -1411,12 +1611,16 @@ fn update_player_visuals(
     for y in 0..player.grid.height {
         for x in 0..player.grid.width {
             let idx = y * player.grid.width + x;
-            let color = match player.grid.get(x, y).map(|b| b.color) {
-                Some(BlockColor::Red) => Color::srgb(0.85, 0.2, 0.2),
-                Some(BlockColor::Green) => Color::srgb(0.2, 0.8, 0.3),
-                Some(BlockColor::Blue) => Color::srgb(0.2, 0.4, 0.9),
-                Some(BlockColor::Yellow) => Color::srgb(0.9, 0.8, 0.2),
-                Some(BlockColor::Purple) => Color::srgb(0.6, 0.3, 0.9),
+            let color = match player.grid.get(x, y) {
+                Some(Block::Normal { color }) => match color {
+                    BlockColor::Red => Color::srgb(0.9, 0.36, 0.5),
+                    BlockColor::Green => Color::srgb(0.18, 0.78, 0.5),
+                    BlockColor::Blue => Color::srgb(0.36, 0.52, 0.96),
+                    BlockColor::Yellow => Color::srgb(0.95, 0.76, 0.28),
+                    BlockColor::Purple => Color::srgb(0.62, 0.4, 0.9),
+                },
+                Some(Block::Garbage { cracked: true }) => Color::srgb(0.58, 0.6, 0.62),
+                Some(Block::Garbage { cracked: false }) => Color::srgb(0.36, 0.38, 0.4),
                 None => Color::srgba(0.0, 0.0, 0.0, 0.0),
             };
             if let Some(entity) = view.blocks.get(idx) {
