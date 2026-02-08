@@ -187,12 +187,24 @@ fn main() {
         .add_systems(Update, handle_menu_input.run_if(in_state(AppState::Title)))
         .add_systems(Update, handle_pause_input.run_if(in_state(AppState::Pause)))
         .add_systems(Update, handle_input.run_if(in_state(AppState::Game)))
-        .add_systems(Update, handle_pause_request.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            handle_pause_request.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, handle_restart.run_if(in_state(AppState::Game)))
-        .add_systems(Update, handle_game_over_back.run_if(in_state(AppState::Game)))
-        .add_systems(Update, apply_gravity_system.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            handle_game_over_back.run_if(in_state(AppState::Game)),
+        )
+        .add_systems(
+            Update,
+            apply_gravity_system.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, update_time.run_if(in_state(AppState::Game)))
-        .add_systems(Update, update_game_over_timer.run_if(in_state(AppState::Game)))
+        .add_systems(
+            Update,
+            update_game_over_timer.run_if(in_state(AppState::Game)),
+        )
         .add_systems(Update, update_panel_layout.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_visuals.run_if(in_state(AppState::Game)))
         .add_systems(Update, update_ui_text.run_if(in_state(AppState::Game)))
@@ -247,37 +259,45 @@ fn setup_menu(mut commands: Commands, selection: Res<MenuSelection>) {
             ..Default::default()
         });
 
-        one_player = Some(parent.spawn(TextBundle {
-            text: Text::from_section(
-                "1 PLAYER",
-                TextStyle {
-                    font: Default::default(),
-                    font_size: 28.0,
-                    color: if selection.two_player {
-                        Color::srgb(0.7, 0.7, 0.75)
-                    } else {
-                        Color::srgb(0.2, 0.9, 0.6)
-                    },
-                },
-            ),
-            ..Default::default()
-        }).id());
+        one_player = Some(
+            parent
+                .spawn(TextBundle {
+                    text: Text::from_section(
+                        "1 PLAYER",
+                        TextStyle {
+                            font: Default::default(),
+                            font_size: 28.0,
+                            color: if selection.two_player {
+                                Color::srgb(0.7, 0.7, 0.75)
+                            } else {
+                                Color::srgb(0.2, 0.9, 0.6)
+                            },
+                        },
+                    ),
+                    ..Default::default()
+                })
+                .id(),
+        );
 
-        two_player = Some(parent.spawn(TextBundle {
-            text: Text::from_section(
-                "2 PLAYER",
-                TextStyle {
-                    font: Default::default(),
-                    font_size: 28.0,
-                    color: if selection.two_player {
-                        Color::srgb(0.2, 0.9, 0.6)
-                    } else {
-                        Color::srgb(0.7, 0.7, 0.75)
-                    },
-                },
-            ),
-            ..Default::default()
-        }).id());
+        two_player = Some(
+            parent
+                .spawn(TextBundle {
+                    text: Text::from_section(
+                        "2 PLAYER",
+                        TextStyle {
+                            font: Default::default(),
+                            font_size: 28.0,
+                            color: if selection.two_player {
+                                Color::srgb(0.2, 0.9, 0.6)
+                            } else {
+                                Color::srgb(0.7, 0.7, 0.75)
+                            },
+                        },
+                    ),
+                    ..Default::default()
+                })
+                .id(),
+        );
 
         parent.spawn(TextBundle {
             text: Text::from_section(
@@ -294,7 +314,10 @@ fn setup_menu(mut commands: Commands, selection: Res<MenuSelection>) {
 
     commands.insert_resource(MenuRoot(root));
     if let (Some(one_player), Some(two_player)) = (one_player, two_player) {
-        commands.insert_resource(MenuTextEntities { one_player, two_player });
+        commands.insert_resource(MenuTextEntities {
+            one_player,
+            two_player,
+        });
     }
 }
 
@@ -350,7 +373,8 @@ fn setup_pause(mut commands: Commands) {
                     font_size: 18.0,
                     color: Color::srgb(0.7, 0.7, 0.75),
                 },
-            ).with_justify(JustifyText::Center),
+            )
+            .with_justify(JustifyText::Center),
             ..Default::default()
         });
     });
@@ -493,12 +517,7 @@ fn setup_game(
 
     let (p1_origin, p2_origin) = compute_player_origins(*mode);
 
-    let p1_view = spawn_player_view(
-        &mut commands,
-        &players.p1.grid,
-        p1_origin,
-        PanelSide::Right,
-    );
+    let p1_view = spawn_player_view(&mut commands, &players.p1.grid, p1_origin, PanelSide::Right);
 
     let p2_view = if *mode == GameMode::TwoPlayer {
         Some(spawn_player_view(
@@ -511,7 +530,10 @@ fn setup_game(
         None
     };
 
-    commands.insert_resource(PlayerViews { p1: p1_view, p2: p2_view });
+    commands.insert_resource(PlayerViews {
+        p1: p1_view,
+        p2: p2_view,
+    });
     initialized.0 = true;
 }
 
@@ -610,9 +632,21 @@ fn handle_input(
         handle_gamepad(p2_gamepad, buttons.as_ref(), &mut players.p2);
     }
 
-    handle_repeat_p1(keys.as_ref(), buttons.as_ref(), p1_gamepad, &mut players.p1, delta);
+    handle_repeat_p1(
+        keys.as_ref(),
+        buttons.as_ref(),
+        p1_gamepad,
+        &mut players.p1,
+        delta,
+    );
     if *mode == GameMode::TwoPlayer {
-        handle_repeat_p2(keys.as_ref(), buttons.as_ref(), p2_gamepad, &mut players.p2, delta);
+        handle_repeat_p2(
+            keys.as_ref(),
+            buttons.as_ref(),
+            p2_gamepad,
+            &mut players.p2,
+            delta,
+        );
     }
 }
 
@@ -731,7 +765,10 @@ fn dir_state_p1(
     let gp_just = gamepad.map_or(false, |pad| {
         buttons.just_pressed(GamepadButton::new(pad, button))
     });
-    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+    (
+        keys.just_pressed(key) || gp_just,
+        keys.pressed(key) || gp_pressed,
+    )
 }
 
 fn dir_state_p2(
@@ -752,7 +789,10 @@ fn dir_state_p2(
     let gp_just = gamepad.map_or(false, |pad| {
         buttons.just_pressed(GamepadButton::new(pad, button))
     });
-    (keys.just_pressed(key) || gp_just, keys.pressed(key) || gp_pressed)
+    (
+        keys.just_pressed(key) || gp_just,
+        keys.pressed(key) || gp_pressed,
+    )
 }
 
 fn select_direction(
@@ -766,7 +806,10 @@ fn select_direction(
         }
     }
     if let Some(dir) = current {
-        if pressed.iter().any(|(is_pressed, d)| *is_pressed && *d == dir) {
+        if pressed
+            .iter()
+            .any(|(is_pressed, d)| *is_pressed && *d == dir)
+        {
             return Some(dir);
         }
     }
@@ -778,11 +821,7 @@ fn select_direction(
     None
 }
 
-fn update_repeat_move(
-    player: &mut PlayerState,
-    dir: Option<IVec2>,
-    delta: std::time::Duration,
-) {
+fn update_repeat_move(player: &mut PlayerState, dir: Option<IVec2>, delta: std::time::Duration) {
     if let Some(dir) = dir {
         let dir_changed = player.repeat_dir != Some(dir);
         if dir_changed {
@@ -808,9 +847,12 @@ fn update_repeat_move(
 }
 
 fn move_cursor(player: &mut PlayerState, dir: IVec2) {
-    player
-        .cursor
-        .move_by(dir.x as isize, dir.y as isize, player.grid.width, player.grid.height);
+    player.cursor.move_by(
+        dir.x as isize,
+        dir.y as isize,
+        player.grid.width,
+        player.grid.height,
+    );
 }
 
 fn try_swap(player: &mut PlayerState) {
@@ -834,18 +876,21 @@ fn handle_restart(
     if match_over_timer.seconds < 1.0 {
         return;
     }
-    let keyboard_restart = keys.get_just_pressed().any(|k| {
-        *k != KeyCode::Escape && *k != KeyCode::Tab && *k != KeyCode::Backspace
-    });
-    let gamepad_restart = buttons
+    let keyboard_restart = keys
         .get_just_pressed()
-        .any(|b| !matches!(b.button_type, GamepadButtonType::DPadUp
-            | GamepadButtonType::DPadDown
-            | GamepadButtonType::DPadLeft
-            | GamepadButtonType::DPadRight
-            | GamepadButtonType::Start
-            | GamepadButtonType::Select
-            | GamepadButtonType::Mode));
+        .any(|k| *k != KeyCode::Escape && *k != KeyCode::Tab && *k != KeyCode::Backspace);
+    let gamepad_restart = buttons.get_just_pressed().any(|b| {
+        !matches!(
+            b.button_type,
+            GamepadButtonType::DPadUp
+                | GamepadButtonType::DPadDown
+                | GamepadButtonType::DPadLeft
+                | GamepadButtonType::DPadRight
+                | GamepadButtonType::Start
+                | GamepadButtonType::Select
+                | GamepadButtonType::Mode
+        )
+    });
     if keyboard_restart || gamepad_restart {
         reset_player(&mut players.p1);
         reset_player(&mut players.p2);
@@ -1081,27 +1126,27 @@ fn add_garbage_for_clear(player: &mut PlayerState, cleared: u32, groups: u32) {
     player.garbage_outgoing += total.min(remaining);
 }
 
-fn resolve_garbage(
-    mut players: ResMut<Players>,
-    match_over: Res<MatchOver>,
-    mode: Res<GameMode>,
-) {
+fn resolve_garbage(mut players: ResMut<Players>, match_over: Res<MatchOver>, mode: Res<GameMode>) {
     if match_over.active || *mode != GameMode::TwoPlayer {
         return;
     }
 
     if players.p1.chain_ended {
         if players.p1.garbage_outgoing > 0 {
-            players.p2.garbage_incoming =
-                players.p2.garbage_incoming.saturating_add(players.p1.garbage_outgoing);
+            players.p2.garbage_incoming = players
+                .p2
+                .garbage_incoming
+                .saturating_add(players.p1.garbage_outgoing);
             players.p1.garbage_outgoing = 0;
         }
         players.p1.chain_ended = false;
     }
     if players.p2.chain_ended {
         if players.p2.garbage_outgoing > 0 {
-            players.p1.garbage_incoming =
-                players.p1.garbage_incoming.saturating_add(players.p2.garbage_outgoing);
+            players.p1.garbage_incoming = players
+                .p1
+                .garbage_incoming
+                .saturating_add(players.p2.garbage_outgoing);
             players.p2.garbage_outgoing = 0;
         }
         players.p2.chain_ended = false;
@@ -1220,15 +1265,15 @@ fn spawn_background_grid(commands: &mut Commands, grid: &Grid, origin: Vec2) {
             let pos = cell_center(grid, x, y, origin);
             commands
                 .spawn(SpriteBundle {
-                sprite: Sprite {
-                    color: Color::srgba(0.1, 0.1, 0.12, 0.35),
-                    custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
+                    sprite: Sprite {
+                        color: Color::srgba(0.1, 0.1, 0.12, 0.35),
+                        custom_size: Some(Vec2::splat(CELL_SIZE - 1.0)),
+                        ..Default::default()
+                    },
+                    transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
                     ..Default::default()
-                },
-                transform: Transform::from_translation(pos - Vec3::new(0.0, 0.0, 1.0)),
-                ..Default::default()
-            })
-            .insert(GameEntity);
+                })
+                .insert(GameEntity);
         }
     }
 }
@@ -1257,15 +1302,15 @@ fn spawn_frame_and_panel(commands: &mut Commands, origin: Vec2, _panel_side: Pan
     ] {
         commands
             .spawn(SpriteBundle {
-            sprite: Sprite {
-                color: border_color,
-                custom_size: Some(size),
+                sprite: Sprite {
+                    color: border_color,
+                    custom_size: Some(size),
+                    ..Default::default()
+                },
+                transform: Transform::from_translation(pos),
                 ..Default::default()
-            },
-            transform: Transform::from_translation(pos),
-            ..Default::default()
-        })
-        .insert(GameEntity);
+            })
+            .insert(GameEntity);
     }
 
     let panel = commands
@@ -1288,15 +1333,15 @@ fn spawn_frame_and_panel(commands: &mut Commands, origin: Vec2, _panel_side: Pan
     commands.entity(panel).with_children(|parent| {
         parent
             .spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Px(28.0),
+                style: Style {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(28.0),
+                    ..Default::default()
+                },
+                background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
                 ..Default::default()
-            },
-            background_color: BackgroundColor(Color::srgb(0.12, 0.12, 0.16)),
-            ..Default::default()
-        })
-        .insert(GameEntity);
+            })
+            .insert(GameEntity);
     });
 
     panel
@@ -1477,9 +1522,7 @@ fn position_panel(
 ) {
     let left = match view.panel_side {
         PanelSide::Right => window_w / 2.0 + view.origin.x + grid_w / 2.0 + PANEL_GAP,
-        PanelSide::Left => {
-            window_w / 2.0 + view.origin.x - grid_w / 2.0 - PANEL_GAP - PANEL_WIDTH
-        }
+        PanelSide::Left => window_w / 2.0 + view.origin.x - grid_w / 2.0 - PANEL_GAP - PANEL_WIDTH,
     };
 
     if let Ok(mut style) = style_query.get_mut(view.panel) {

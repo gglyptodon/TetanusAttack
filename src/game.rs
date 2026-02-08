@@ -113,8 +113,14 @@ impl Grid {
         {
             return false;
         }
-        if self.get(cmd.ax, cmd.ay).map(|b| b.is_garbage()).unwrap_or(false)
-            || self.get(cmd.bx, cmd.by).map(|b| b.is_garbage()).unwrap_or(false)
+        if self
+            .get(cmd.ax, cmd.ay)
+            .map(|b| b.is_garbage())
+            .unwrap_or(false)
+            || self
+                .get(cmd.bx, cmd.by)
+                .map(|b| b.is_garbage())
+                .unwrap_or(false)
         {
             return false;
         }
@@ -143,10 +149,6 @@ impl Grid {
         self.cells.fill(None);
     }
 
-    pub fn clear_matches_once(&mut self) -> u32 {
-        self.clear_matches_once_with_stats().cleared
-    }
-
     pub fn clear_matches_once_with_stats(&mut self) -> ClearStats {
         let marks = self.find_matches();
         if marks.iter().all(|m| !*m) {
@@ -168,10 +170,6 @@ impl Grid {
     pub fn has_matches(&self) -> bool {
         let marks = self.find_matches();
         marks.iter().any(|m| *m)
-    }
-
-    pub fn apply_gravity(&mut self) {
-        while self.apply_gravity_step() {}
     }
 
     pub fn apply_gravity_step(&mut self) -> bool {
@@ -390,7 +388,10 @@ impl Grid {
     }
 
     fn same_color(&self, ax: usize, ay: usize, bx: usize, by: usize) -> bool {
-        match (self.get(ax, ay).and_then(Block::color), self.get(bx, by).and_then(Block::color)) {
+        match (
+            self.get(ax, ay).and_then(Block::color),
+            self.get(bx, by).and_then(Block::color),
+        ) {
             (Some(a), Some(b)) => a == b,
             _ => false,
         }
@@ -456,12 +457,30 @@ impl Grid {
             None
         };
 
-        let horiz_left = left1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
-            && left2.and_then(Block::color).map(|b| b == color).unwrap_or(false);
-        let horiz_right = right1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
-            && right2.and_then(Block::color).map(|b| b == color).unwrap_or(false);
-        let horiz_split = left1.and_then(Block::color).map(|b| b == color).unwrap_or(false)
-            && right1.and_then(Block::color).map(|b| b == color).unwrap_or(false);
+        let horiz_left = left1
+            .and_then(Block::color)
+            .map(|b| b == color)
+            .unwrap_or(false)
+            && left2
+                .and_then(Block::color)
+                .map(|b| b == color)
+                .unwrap_or(false);
+        let horiz_right = right1
+            .and_then(Block::color)
+            .map(|b| b == color)
+            .unwrap_or(false)
+            && right2
+                .and_then(Block::color)
+                .map(|b| b == color)
+                .unwrap_or(false);
+        let horiz_split = left1
+            .and_then(Block::color)
+            .map(|b| b == color)
+            .unwrap_or(false)
+            && right1
+                .and_then(Block::color)
+                .map(|b| b == color)
+                .unwrap_or(false);
 
         if horiz_left || horiz_right || horiz_split {
             return true;
